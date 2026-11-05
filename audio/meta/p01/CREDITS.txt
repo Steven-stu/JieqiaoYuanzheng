@@ -1,0 +1,37 @@
+界桥远征 V0.7 —— 音频素材与授权（CREDITS）
+
+【背景音乐】吟游诗人 / 中世纪民谣管弦，四首均来自 Kevin MacLeod (incompetech.com)，授权 CC BY 4.0
+
+  大厅与非战斗页面
+  · menu.mp3        = "Village Consort"               （大厅主界面：吉他 + 木笛(Recorder) + Gemshorn，村庄合奏，明亮松弛）
+  · lobby_soft.mp3  = "Royal Coupling"                （图鉴 / 组卡 / 资料 / 联机 / 签到 / 商店 / 交换：完整管弦，宫廷风）
+
+  对战（两首专用于对战）
+  · battle_intro.mp3 = "The Snow Queen"               （**进入对局那一刻**的进场曲：弦乐 + 钢片琴 + 长笛，冷冽清亮）
+  · battle.mp3       = "The Path of the Goblin King"  （**对局进行中**的主曲：同编制，缓而悠扬，带童话怪奇感）
+
+  切换规则（V06Audio.BattleIntroSeconds = 9 秒）：
+    进入对局 → 立刻播 battle_intro；9 秒后交叉淡入 battle 作为对局主曲；
+    结算回大厅 → 交叉淡回 menu。全部走双源等功率交叉淡入，不会有硬切。
+
+  授权协议：https://creativecommons.org/licenses/by/4.0/
+  署名要求：使用处需注明 "Kevin MacLeod (incompetech.com), Licensed under CC BY 4.0"
+
+【界面 / 战斗音效】
+  来源：Juhani Junkala — "The Essential Retro Video Game Sound Effects Collection"
+  （OpenGameArt，CC0 / 公有领域，无需署名）
+  https://opengameart.org/content/512-sound-effects-8-bit-style
+
+【播放方式】
+  所有 BGM 都用"双 AudioSource 等功率交叉淡入"实现无缝循环（不用 AudioSource.loop 的硬切），
+  淡入淡出 2.8 秒、提前 3.2 秒开始交叉，切曲与循环接缝都听不出来。
+
+【候选曲库（未使用，留档）】
+  另有 9 首同作者中世纪/管弦候选存在工作区 D:\deepseekharness\界桥远征_配乐候选\，其中被选用的 4 首：
+  Village Consort(03) / Royal Coupling(05) / The Snow Queen(07) / The Path of the Goblin King(08)。
+
+【历史曲目（已替换）】
+  battleThemeA / song18（8-bit 芯片音乐，风格不统一）
+  Virtutes Instrumenti / Five Armies / Ossuary 5 - Rest（管弦但偏低沉压抑，听感过于伤感）
+  Fairytale Waltz / Life of Riley / Achaidh Cheide（凯尔特民谣向，但中世纪感不足、风格不统一）
+  Teller of the Tales / Minstrel Guild / Village Consort（第一版：拨弦感过强显得断断续续）
