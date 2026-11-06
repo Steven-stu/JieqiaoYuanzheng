@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using Jieqiao.UI;
 using System.Collections.Generic;
 using System.Text;
 using Jieqiao;
@@ -38,6 +39,29 @@ public static class V06Layer2Checks
         ResponseMirrorReflect();
         ResponseEscape();
         CardConservation();
+        // ── 批 1 规则缺陷回归(2026-11-05) ──
+        CoopAttackCountsOnSubmit();
+        TacticPassesTurn();
+        SupportHealTargets();
+        TokenCannotAttackFlag();
+        GuardDoesNotStack();
+        AssistBonusNotConsumedByPreview();
+        // ── 批 2 来源撤词回归(2026-11-05) ──
+        EquipSwitchRevokesBonus();
+        SealSwitchRevokesBonus();
+        SealPierceStaysPermanent();
+        PierceDamageSeesAuraGuard();
+        // ── 自由组卡(§4)回归 ──
+        FreeDeckLegality();
+        // ── §2 效果补全回归 ──
+        SpiritHealsOnDeath();
+        RepairUnitAlsoHealsAndSpawns();
+        // ── 术语表与 T08 维修补触发（第四十八轮口径） ──
+        TokenRepairTriggers();
+        TermTableCoversKeywords();
+        TermTextsAreClean();
+        // ── A-01：撤装/换印不得删掉单位本体自带的关键词 ──
+        BaseKeywordSurvivesSwitch();
 
         Out.AppendLine("第三层定点测试：" + _pass + " 通过 / " + _fail + " 失败");
         return Out.ToString();
@@ -106,6 +130,377 @@ public static class V06Layer2Checks
         if (a == null) { return false; }
         string err;
         return e.Apply(a, out err);
+    }
+
+    // ───────────────────────── 批 1 规则缺陷回归 ─────────────────────────
+
+    /// <summary>协攻:提交攻击时也要 +1(此前先标已攻击,导致协攻永远不生效)。</summary>
+    private static void CoopAttackCountsOnSubmit()
+    {
+        V06Engine e = Start(8801, 8, 9);
+        if (e == null) { Check("协攻提交 +1", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Player foe = e.Players[1];
+        V06Unit a = Put(me, "U-G01", 0);   // 哥布林巫祝 2攻 协攻
+        Put(me, "U-G03", 1);               // 前排第二人,满足协攻条件
+        V06Unit t = Put(foe, "U-H01", 0);
+        t.DeployedThisRound = false;
+        a.DeployedThisRound = false;
+        e.Active = 0;
+        me.ActionPoints = 9; me.MainActionsUsed = 0;
+        int preview = e.FinalAttack(a, false);
+        V06Action act = new V06Action { Kind = V06ActionKind.Attack, Uid = a.Uid, TargetUid = t.Uid };
+        string err = "";
+        bool ok = e.Apply(act, out err);
+        int declared = e.PendingDamage;
+        Check("协攻:攻击值含 +1(预览 " + preview + " / 宣布 " + declared + ")",
+            ok && preview == 3 && declared == 3, "ok=" + ok + " err=" + err);
+    }
+
+    /// <summary>非单位牌(战术)打出后要交接行动。</summary>
+    private static void TacticPassesTurn()
+    {
+        V06Engine e = Start(8802, 8, 9);
+        if (e == null) { Check("战术交接", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        Put(me, "U-H01", 0);
+        e.Active = 0;
+        me.Hand.Add("S-H03");   // 远征号令:抽 2
+        me.ActionPoints = 9; me.MainActionsUsed = 0;
+        V06Action act = Find(e, V06ActionKind.PlayCard, "S-H03", -1);
+        string err = "";
+        bool ok = act != null && e.Apply(act, out err);
+        Check("战术牌打完后交接行动", ok && e.Active == 1, "ok=" + ok + " Active=" + e.Active + " err=" + err);
+    }
+
+    /// <summary>治疗类战术要真的治疗到目标(S-O04 部族医药 / S-G04 巨魔疗伤)。</summary>
+    private static void SupportHealTargets()
+    {
+        V06Engine e = Start(8803, 8, 9);
+        if (e == null) { Check("治疗战术", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Unit u = Put(me, "U-G05", 0);   // 7 血巨魔
+        u.Damage = 4;                     // 受伤 4 → 当前血 3,治疗 3 后为 6(不撞上限)
+        int before = u.CurHp;
+        bool ok1 = PlayCard(e, 0, "S-O04", u.Uid);
+        int after1 = u.CurHp;
+        Check("S-O04 部族医药治疗 3", ok1 && after1 == before + 3,
+            "ok=" + ok1 + " 血 " + before + " → " + after1);
+
+        // S-G04 巨魔疗伤:普通 3,巨魔 5
+        V06Engine e2 = Start(8804, 8, 9);
+        V06Player me2 = e2.Players[0];
+        V06Unit h = Put(me2, "U-G03", 0);   // 3 血,受 2 伤后剩 1
+        h.Damage = 2;
+        bool ok2 = PlayCard(e2, 0, "S-G04", h.Uid);
+        int hpHuman = h.CurHp;
+        V06Unit g = Put(me2, "U-G05", 1);   // 巨魔
+        g.Damage = g.MaxHp - 1;
+        bool ok3 = PlayCard(e2, 0, "S-G04", g.Uid);
+        int hpTroll = g.CurHp;
+        Check("S-G04 巨魔疗伤:普通 +3、巨魔 +5", ok2 && ok3 && hpHuman == 3 && hpTroll == 6,
+            "普通 1→" + hpHuman + "(应为3,上限3)，巨魔 1→" + hpTroll + "(应为6)");
+    }
+
+    /// <summary>卡面写明"不能攻击远征旗"的衍生物不能打旗。</summary>
+    private static void TokenCannotAttackFlag()
+    {
+        V06Engine e = Start(8805, 8, 9);
+        if (e == null) { Check("衍生物禁旗", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Unit tk = Put(me, "T05", 0);    // 荒原奇美拉:突袭;不能攻击远征旗
+        tk.DeployedThisRound = false;
+        e.Active = 0;
+        me.ActionPoints = 9; me.MainActionsUsed = 0;
+        bool hasFlagAction = false;
+        List<V06Action> acts = e.LegalActions();
+        for (int i = 0; i < acts.Count; i++)
+        {
+            if (acts[i].Kind == V06ActionKind.Attack && acts[i].ToFlag && acts[i].Uid == tk.Uid) { hasFlagAction = true; }
+        }
+        Check("T05 不能攻击远征旗", !hasFlagAction && !e.CanAttackFlag(tk),
+            "枚举到旗攻击=" + hasFlagAction + " CanAttackFlag=" + e.CanAttackFlag(tk));
+    }
+
+    /// <summary>坚壁类减伤不叠加:坚壁 + P12 共同战线只减 1。</summary>
+    private static void GuardDoesNotStack()
+    {
+        V06Engine e = Start(8806, 8, 9);
+        if (e == null) { Check("坚壁不叠加", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Unit u = Put(me, "U-H02", 0);   // 护卫(非坚壁)
+        me.FrontReduceThisRound = 1;       // P12 效果
+        u.AddKw("坚壁");                    // 同时有坚壁
+        int dmg = e.ModifyAttackDamage(u, 3, true, 0);
+        Check("坚壁 + 共同战线只减 1(3 伤 → 2)", dmg == 2, "实际 " + dmg);
+    }
+
+    /// <summary>预览不应消费"每轮首次协攻"标记,否则真打时拿不到 F06 加成。</summary>
+    private static void AssistBonusNotConsumedByPreview()
+    {
+        V06Engine e = Start(8807, 8, 9);
+        if (e == null) { Check("协攻预览不消费", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        me.BattlefieldId = "F06";          // 荒原战鼓
+        V06Unit a = Put(me, "U-G01", 0);   // 2 攻 协攻
+        Put(me, "U-G03", 1);
+        a.DeployedThisRound = false;
+        int p1 = e.FinalAttack(a, false);  // 预览
+        bool usedAfterPreview = me.FirstAssistUsed;
+        int p2 = e.FinalAttack(a, false);  // 再预览一次
+        Check("协攻预览两次都含 F06 加成且不消费标记",
+            p1 == 4 && p2 == 4 && !usedAfterPreview,
+            "预览 " + p1 + " / " + p2 + "，预览后 FirstAssistUsed=" + usedAfterPreview);
+    }
+
+    // ───────────────────────── 批 2:来源与收口 ─────────────────────────
+
+    /// <summary>Q01(+1攻)换成 Q04(+2攻):应只剩 +2,不能累加成 +3。</summary>
+    private static void EquipSwitchRevokesBonus()
+    {
+        V06Engine e = Start(8811, 8, 9);
+        if (e == null) { Check("换装不累加", false, "开局失败"); return; }
+        V06Unit u = Put(e.Players[0], "U-D01", 0);
+        int baseAtk = u.AtkBaseNow;
+        bool ok1 = PlayCard(e, 0, "Q01", u.Uid);
+        int afterQ01 = u.AtkBaseNow;
+        bool ok2 = PlayCard(e, 0, "Q04", u.Uid);
+        int afterQ04 = u.AtkBaseNow;
+        Check("Q01 → Q04 换装只保留 +2(不累加 +3)",
+            ok1 && ok2 && afterQ01 == baseAtk + 1 && afterQ04 == baseAtk + 2,
+            "基础 " + baseAtk + " → Q01 " + afterQ01 + " → Q04 " + afterQ04);
+    }
+
+    /// <summary>A06(+1攻)换成 A01(护卫):攻击加成要撤掉,同时拿到护卫。</summary>
+    private static void SealSwitchRevokesBonus()
+    {
+        V06Engine e = Start(8812, 8, 9);
+        if (e == null) { Check("换印撤词", false, "开局失败"); return; }
+        V06Unit u = Put(e.Players[0], "U-D01", 0);
+        int baseAtk = u.AtkBaseNow;
+        bool ok1 = PlayCard(e, 0, "A06", u.Uid);
+        int afterA06 = u.AtkBaseNow;
+        bool ok2 = PlayCard(e, 0, "A01", u.Uid);
+        int afterA01 = u.AtkBaseNow;
+        Check("A06 → A01 换印:攻击加成撤销、护卫生效",
+            ok1 && ok2 && afterA06 == baseAtk + 1 && afterA01 == baseAtk && u.Has("护卫"),
+            "基础 " + baseAtk + " → A06 " + afterA06 + " → A01 " + afterA01 + "，护卫=" + u.Has("护卫"));
+    }
+
+    /// <summary>A03 穿透是本局永久,换掉附印仍保留(文档明确例外)。</summary>
+    private static void SealPierceStaysPermanent()
+    {
+        V06Engine e = Start(8813, 8, 9);
+        if (e == null) { Check("A03 穿透永久", false, "开局失败"); return; }
+        V06Unit u = Put(e.Players[0], "U-D01", 0);
+        bool ok1 = PlayCard(e, 0, "A03", u.Uid);
+        bool afterPierce = u.Has("穿透");
+        bool ok2 = PlayCard(e, 0, "A01", u.Uid);
+        Check("A03 穿透换印后仍保留",
+            ok1 && ok2 && afterPierce && u.Has("穿透") && u.Has("护卫"),
+            "A03 后穿透=" + afterPierce + "，换 A01 后穿透=" + u.Has("穿透") + " 护卫=" + u.Has("护卫"));
+    }
+
+    /// <summary>S-D01 破甲重锤:目标若有"光环给的坚壁"(F03)也要按 4 点结算。</summary>
+    private static void PierceDamageSeesAuraGuard()
+    {
+        V06Engine e = Start(8814, 8, 9);
+        if (e == null) { Check("S-D01 识别光环坚壁", false, "开局失败"); return; }
+        V06Player foe = e.Players[1];
+        foe.BattlefieldId = "F03";             // 己方构装获得坚壁
+        V06Unit c = Put(foe, "U-M01", 0);      // 构装单位
+        int before = c.CurHp;
+        bool ok = PlayCard(e, 0, "S-D01", c.Uid);
+        int after = c.CurHp;
+        Check("S-D01 对有光环坚壁的构装打 4 点",
+            ok && before - after == 4, "ok=" + ok + " 血 " + before + " → " + after);
+    }
+
+    // ───────────────────────── 自由组卡(§4) ─────────────────────────
+
+    /// <summary>自由 24 张:多种组合都合法;23 张/同名 3 张不合法。</summary>
+    private static void FreeDeckLegality()
+    {
+        var checks = new List<string>();
+        bool ok = true;
+
+        // ① 旧模板:8 单位 + 2 战术 + 4 额外 = 24
+        ok &= ProbeDeck(
+            new string[] { "U-H01", "U-H02", "U-H03", "U-H04", "U-H05", "U-H06", "U-H07", "U-H08" },
+            new string[] { "S-H01", "S-H02" }, new string[] { "Q01", "Q02", "Q03", "A01" }, true, "8+2+4", checks);
+        // ② 12 单位 + 0 战术 = 24
+        ok &= ProbeDeck(
+            new string[] { "U-H01", "U-H02", "U-H03", "U-H04", "U-H05", "U-H06", "U-H07", "U-H08", "U-E01", "U-E02", "U-D01", "U-D02" },
+            new string[0], new string[0], true, "12单位", checks);
+        // ③ 10 单位 + 2 战术 = 24
+        ok &= ProbeDeck(
+            new string[] { "U-H01", "U-H02", "U-H03", "U-H04", "U-H05", "U-H06", "U-H07", "U-H08", "U-E01", "U-E02" },
+            new string[] { "S-H01", "S-H02" }, new string[0], true, "10+2", checks);
+        // ④ 23 张不合法
+        ok &= ProbeDeck(
+            new string[] { "U-H01", "U-H02", "U-H03", "U-H04", "U-H05", "U-H06", "U-H07", "U-H08" },
+            new string[] { "S-H01" }, new string[] { "Q01", "Q02", "Q03" }, false, "23张", checks);
+        // ⑤ 同名 3 张不合法(单位算 2 张 + 额外同卡 1 张)
+        ok &= ProbeDeck(
+            new string[] { "U-H01", "U-H02", "U-H03", "U-H04", "U-H05", "U-H06", "U-H07", "U-H08" },
+            new string[] { "S-H01", "S-H02" }, new string[] { "U-H01", "Q02", "Q03" }, false, "同名3张", checks);
+
+        Check("自由组卡 24 张 + 同名≤2", ok, string.Join(" ", checks.ToArray()));
+    }
+
+    private static bool ProbeDeck(string[] units, string[] tactics, string[] extras, bool expectLegal, string tag, List<string> log)
+    {
+        V06DeckSave d = new V06DeckSave();
+        d.name = "测试";
+        d.units = units;
+        d.tactics = tactics;
+        d.extras = extras;
+        d.upgrades = new string[] { "J01", "J02", "J05" };
+        d.supports = new string[] { "P01", "P02", "P03" };
+        d.vanguard = units.Length > 0 ? units[0] : null;
+        bool legal = d.IsLegal();
+        log.Add(tag + "(主牌" + d.MainCount + "→" + (legal ? "合法" : "不合法") + ")");
+        return legal == expectLegal;
+    }
+
+    // ───────────────────────── §2 效果补全 ─────────────────────────
+
+    /// <summary>T02 微光侍灵被击败时,治疗一个己方受伤单位 1。</summary>
+    private static void SpiritHealsOnDeath()
+    {
+        V06Engine e = Start(8821, 8, 9);
+        if (e == null) { Check("T02 死亡治疗", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Unit wounded = Put(me, "U-G05", 0);
+        wounded.Damage = 3;                    // 受伤 3
+        V06Unit spirit = Put(me, "T02", 1);     // 微光侍灵 1/1
+        spirit.Damage = spirit.MaxHp;           // 直接置死
+        int before = wounded.CurHp;
+        e.CleanupDeaths();
+        int after = wounded.CurHp;
+        Check("T02 被击败时治疗己方受伤单位 1", after == before + 1,
+            "受伤单位血 " + before + " → " + after);
+    }
+
+    /// <summary>M04 维修工蜂:入场既要维修构装 2,也要生成 T08。</summary>
+    private static void RepairUnitAlsoHealsAndSpawns()
+    {
+        V06Engine e = Start(8822, 8, 9);
+        if (e == null) { Check("维修+生成", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Unit c = Put(me, "U-M01", 0);        // 构装(留 1 点伤,避免被治死前先阵亡)
+        c.Damage = 1;
+        int beforeHp = c.CurHp;
+        // U-M04 是单位:用 Deploy 部署,而不是 PlayCard
+        me.Hand.Add("U-M04");
+        me.ActionPoints = 9; me.MainActionsUsed = 0;
+        e.Active = 0;
+        V06Action act = Find(e, V06ActionKind.Deploy, "U-M04", -1);
+        string err2 = "";
+        bool ok = act != null && e.Apply(act, out err2);
+        int afterHp = c.CurHp;
+        bool spawned = false;
+        for (int s = 0; s < V06Slot.Total; s++) { V06Unit u = me.At(s); if (u != null && u.CardId == "T08") { spawned = true; } }
+        Check("M04 维修工蜂:维修构装 2 且生成 T08", ok && afterHp > beforeHp && spawned,
+            "ok=" + ok + " err=" + err2 + " 构装血 " + beforeHp + " → " + afterHp + " 生成T08=" + spawned);
+    }
+
+    /// <summary>T08 被生成进场后，要结算自己的维修（口径：生成 T08 不漏 T08 那一份维修）。</summary>
+    private static void TokenRepairTriggers()
+    {
+        V06Engine e = Start(8833, 8, 9);
+        if (e == null) { Check("T08 生成维修", false, "开局失败"); return; }
+        V06Player me = e.Players[0];
+        V06Unit c = Put(me, "U-M01", 0);        // 构装(勘测步行机 3 血)
+        c.Damage = 2;
+        int before = c.CurHp;
+        V06Unit t = e.SpawnToken(0, "T08");
+        int after = c.CurHp;
+        Check("T08 维修微机：生成进场治疗另一个己方受伤构装 2",
+            t != null && after == before + 2,
+            "生成=" + (t != null) + " 构装血 " + before + " → " + after);
+    }
+
+    /// <summary>目录里出现过的每个关键词，都必须能在术语表里查到解释。</summary>
+    private static void TermTableCoversKeywords()
+    {
+        System.Collections.Generic.HashSet<string> used = new System.Collections.Generic.HashSet<string>();
+        for (int i = 0; i < V06Catalog.All.Count; i++)
+        {
+            V06Card c = V06Catalog.All[i];
+            if (c.Keywords == null) { continue; }
+            for (int k = 0; k < c.Keywords.Length; k++)
+            {
+                if (!string.IsNullOrEmpty(c.Keywords[k])) { used.Add(c.Keywords[k]); }
+            }
+        }
+        System.Collections.Generic.List<string> missing = new System.Collections.Generic.List<string>();
+        foreach (string k in used) { if (!V06Terms.Has(k)) { missing.Add(k); } }
+        Check("术语表覆盖全部关键词（" + used.Count + " 个）", missing.Count == 0,
+            "缺：" + string.Join("、", missing.ToArray()) + "　术语表共 " + V06Terms.Count + " 条");
+    }
+
+    /// <summary>术语短释：≤25 字、彼此不串词（前后排允许点名远射／飞行，这是必要的）。</summary>
+    private static void TermTextsAreClean()
+    {
+        string[] keys = V06Terms.AllKeys;
+        System.Collections.Generic.List<string> bad = new System.Collections.Generic.List<string>();
+        System.Collections.Generic.List<string> cross = new System.Collections.Generic.List<string>();
+        for (int i = 0; i < keys.Length; i++)
+        {
+            string s = V06Terms.ShortOf(keys[i]);
+            if (string.IsNullOrEmpty(s)) { bad.Add(keys[i] + "(空)"); continue; }
+            if (s.Length > 25) { bad.Add(keys[i] + "=" + s.Length + "字"); }
+            for (int j = 0; j < keys.Length; j++)
+            {
+                if (i == j) { continue; }
+                if (keys[i] == "前排/后排" && (keys[j] == "远射" || keys[j] == "飞行")) { continue; }
+                if (s.IndexOf(keys[j], System.StringComparison.Ordinal) >= 0) { cross.Add(keys[i] + "含" + keys[j]); }
+            }
+        }
+        Check("术语短释 ≤25 字（" + keys.Length + " 条）", bad.Count == 0, string.Join("、", bad.ToArray()));
+        Check("术语短释互不串词", cross.Count == 0, string.Join("、", cross.ToArray()));
+
+        string block = V06Terms.Block(V06Catalog.ById("T08"));
+        Check("放大面板能解释 T08 的维修", block.Contains("维修") && block.Contains("构装"),
+            "block=" + block.Replace("\n", " / "));
+    }
+
+    /// <summary>A-01：撤装/换印只撤"这件来源加过的"关键词，本体自带的不动。</summary>
+    private static void BaseKeywordSurvivesSwitch()
+    {
+        // ① U-H07 本体坚壁，穿 Q06 再换 Q01 —— 坚壁必须还在
+        V06Engine e1 = Start(8841, 8, 9);
+        if (e1 == null) { Check("本体关键词保留", false, "开局失败"); return; }
+        V06Unit a = Put(e1.Players[0], "U-H07", 0);
+        bool hadGuard = a.Has("坚壁");
+        bool okA1 = PlayCard(e1, 0, "Q06", a.Uid);
+        bool okA2 = PlayCard(e1, 0, "Q01", a.Uid);
+        Check("本体坚壁（U-H07）换装后仍保留",
+            hadGuard && okA1 && okA2 && a.Has("坚壁"),
+            "本体=" + hadGuard + " Q06=" + okA1 + " Q01=" + okA2 + " 换后坚壁=" + a.Has("坚壁"));
+
+        // ② U-H02 本体护卫（人类预组领航），附 A01 再换 A02 —— 护卫必须还在
+        V06Engine e2 = Start(8842, 8, 9);
+        if (e2 == null) { Check("本体护卫保留", false, "开局失败"); return; }
+        V06Unit b = Put(e2.Players[0], "U-H02", 0);
+        bool hadProt = b.Has("护卫");
+        bool okB1 = PlayCard(e2, 0, "A01", b.Uid);
+        bool okB2 = PlayCard(e2, 0, "A02", b.Uid);
+        Check("本体护卫（U-H02 领航盾卫）换印后仍保留",
+            hadProt && okB1 && okB2 && b.Has("护卫"),
+            "本体=" + hadProt + " A01=" + okB1 + " A02=" + okB2 + " 换后护卫=" + b.Has("护卫"));
+
+        // ③ 对照：本体没有远射的单位，Q03 给的远射换装后必须撤掉
+        V06Engine e3 = Start(8843, 8, 9);
+        if (e3 == null) { Check("装备给的关键词仍会撤", false, "开局失败"); return; }
+        V06Unit c = Put(e3.Players[0], "U-H02", 0);     // 无远射
+        bool okC1 = PlayCard(e3, 0, "Q03", c.Uid);
+        bool granted = c.Has("远射");
+        bool okC2 = PlayCard(e3, 0, "Q01", c.Uid);
+        Check("装备给的远射换装后撤销",
+            okC1 && okC2 && granted && !c.Has("远射"),
+            "Q03 后=" + granted + " 换 Q01 后=" + c.Has("远射"));
     }
 
     private static int CountAll(V06Player p)

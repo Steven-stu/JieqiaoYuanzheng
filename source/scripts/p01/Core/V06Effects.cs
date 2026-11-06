@@ -81,20 +81,38 @@ namespace Jieqiao
                 case "U-H06": return EnterKind.DamageEnemy1;
                 case "U-D05": return EnterKind.DamageEnemyFront1;
                 case "U-E06": case "U-E07": case "U-G04": case "U-V08":
-                case "U-O08": case "U-R08": case "U-M04": case "U-M05":
+                case "U-O08": case "U-R08": case "U-M05":
                     return EnterKind.SpawnToken;
                 case "U-O06": return EnterKind.BuffFriendlyAtk1;
                 case "U-M01": return EnterKind.PeekTwo;
                 case "U-M08": return EnterKind.SelfDamage1;
-                case "U-D04": case "U-G03": return EnterKind.RepairConstruct2;
+                case "U-D04": case "U-G03": case "U-M04": case "G07": return EnterKind.RepairConstruct2;
+                // T08 维修微机：作为衍生物被"生成"进场时，也要结算自己的维修
+                // （口径已定：M04/G07 生成 T08 不代表 T08 自己那份维修被漏掉）
+                case "T08": return EnterKind.RepairConstruct2;
                 case "U-R06": return EnterKind.DragonFear;
                 // V0.7 少女向单位
                 case "G01": case "G16": return EnterKind.DamageEnemyFront1;
                 case "G02": return EnterKind.DamageEnemy1;
                 case "G03": case "G11": case "G14": return EnterKind.HealOther2;
                 case "G04": case "G10": return EnterKind.BuffFriendlyAtk1;
-                case "G07": return EnterKind.SpawnToken;
                 case "G08": return EnterKind.PeekTwo;
+                // ── V0.7 第三批卡池 N61–N140：只复用上面 9 种入场效果，不新增代码路径 ──
+                case "N61": case "N71": return EnterKind.DamageEnemyFront1;
+                case "N64": case "N72": case "N78": case "N133": return EnterKind.DamageEnemy1;
+                case "N63": case "N70": case "N73": case "N87":
+                case "N100": case "N106": case "N124":
+                    return EnterKind.HealOther2;
+                case "N62": case "N69": case "N77": case "N103":
+                case "N109": case "N122":
+                    return EnterKind.BuffFriendlyAtk1;
+                case "N65": case "N108": case "N130": return EnterKind.PeekTwo;
+                case "N74": case "N102": case "N127": case "N135": return EnterKind.SpawnToken;
+                // 维修/龙威 是关键词，但引擎按卡号登记才结算（与既有的 M04/G07/U-R06 同一口径）。
+                // 注意：EnterSpec 只能返回一种效果，所以「维修」不能和别的入场效果写在同一张卡上。
+                case "N79": case "N92": case "N125": return EnterKind.RepairConstruct2;
+                case "N76": case "N89": case "N91": case "N115": case "N128": case "N134":
+                    return EnterKind.DragonFear;
             }
             return EnterKind.None;
         }
@@ -112,6 +130,11 @@ namespace Jieqiao
                 case "U-M04": return "T08";
                 case "U-M05": return "T06";
                 case "G07": return "T08";
+                // V0.7 第三批卡池的 4 个铺场单位
+                case "N74": return "T05";   // 荒原奇美拉
+                case "N102": return "T07";  // 霜翼雏龙
+                case "N127": return "T01";  // 灵鹿牧者
+                case "N135": return "T06";  // 守备无人机
             }
             return null;
         }
@@ -172,6 +195,9 @@ namespace Jieqiao
                     {
                         V06Unit t = BestHealTarget(e, owner.Camp, true, u.Uid);
                         if (t != null) { e.Heal(t, 2); e.Log.Add(u.Name + " 维修 " + t.Name + " 2"); }
+                        // 同时带"生成"的维修单位(M04/G07):维修之后继续走生成
+                        string tok = EnterToken(u.CardId);
+                        if (tok != null) { e.SpawnToken(owner.Camp, tok); e.Log.Add(u.Name + " 生成 " + tok); }
                     }
                     break;
                 case EnterKind.DragonFear:
@@ -219,12 +245,13 @@ namespace Jieqiao
 
         public static V06Unit BestAttacker(V06Engine e, int camp)
         {
+            // 敌方单体指向(龙威等)不能选潜行单位
             V06Player side = e.Players[camp];
             V06Unit best = null;
             for (int s = 0; s < V06Slot.Total; s++)
             {
                 V06Unit u = side.At(s);
-                if (u == null) { continue; }
+                if (u == null || u.SneakActive) { continue; }
                 bool canAtk = V06Slot.IsFront(s) || u.Has("远射") || u.Has("飞行");
                 if (!canAtk || u.AttackedThisRound) { continue; }
                 if (best == null || u.AtkBaseNow > best.AtkBaseNow) { best = u; }
@@ -234,7 +261,7 @@ namespace Jieqiao
                 for (int s = 0; s < V06Slot.Total; s++)
                 {
                     V06Unit u = side.At(s);
-                    if (u == null) { continue; }
+                    if (u == null || u.SneakActive) { continue; }
                     if (best == null || u.AtkBaseNow > best.AtkBaseNow) { best = u; }
                 }
             }
@@ -348,6 +375,10 @@ namespace Jieqiao
                 case "S-G03":
                     if (!DiscardHasConstructOrEquip(e.Players[camp])) { return false; }
                     break;
+                case "S-V03":
+                    // 需要"某个己方单位 + 另一排的空格"同时存在，否则这张牌无从落位
+                    if (!HasOtherRowSpace(e.Players[camp])) { return false; }
+                    break;
             }
             if (s.Target == Trg.TwoTargets)
             {
@@ -414,10 +445,44 @@ namespace Jieqiao
                 return;
             }
             List<V06Unit> tg = TargetsOf(e, camp, s.Target);
+            // S-V03 红雾换位：落点由玩家选，所以每个"单位 × 对面空格"都是一个可选方案，
+            // 不能只给单位、再由引擎自己挑空格（那样玩家决定不了换到哪一格）。
+            if (c.Id == "S-V03")
+            {
+                V06Player pv3 = e.Players[camp];
+                for (int i = 0; i < tg.Count; i++)
+                {
+                    V06Unit u = tg[i];
+                    if (u == null) { continue; }
+                    int lo = V06Slot.IsFront(u.Slot) ? V06Slot.FrontCount : 0;
+                    int hi = V06Slot.IsFront(u.Slot) ? V06Slot.Total : V06Slot.FrontCount;
+                    for (int sl = lo; sl < hi; sl++)
+                    {
+                        if (pv3.At(sl) != null) { continue; }
+                        list.Add(new V06Action { Kind = V06ActionKind.PlayCard, CardId = c.Id, Uid = u.Uid, TargetSlot = sl });
+                    }
+                }
+                return;
+            }
             for (int i = 0; i < tg.Count; i++)
             {
                 list.Add(new V06Action { Kind = V06ActionKind.PlayCard, CardId = c.Id, Uid = tg[i].Uid });
             }
+        }
+
+        /// <summary>场上是否存在"某己方单位 + 其对面一排的空格"（S-V03 这类需要落点的牌判断可用性）。</summary>
+        private static bool HasOtherRowSpace(V06Player p)
+        {
+            if (p == null) { return false; }
+            for (int s = 0; s < V06Slot.Total; s++)
+            {
+                V06Unit u = p.At(s);
+                if (u == null) { continue; }
+                int lo = V06Slot.IsFront(u.Slot) ? V06Slot.FrontCount : 0;
+                int hi = V06Slot.IsFront(u.Slot) ? V06Slot.Total : V06Slot.FrontCount;
+                for (int t = lo; t < hi; t++) { if (p.At(t) == null) { return true; } }
+            }
+            return false;
         }
 
         // ───────────────────────── 战术：结算 ─────────────────────────
@@ -473,7 +538,7 @@ namespace Jieqiao
                     e.Draw(camp, 1);
                     break;
                 // 矮人
-                case "S-D01": if (e1 != null) { e.EffectDamage(e1, e1.Has("坚壁") ? 4 : 3, c.Name); } break;
+                case "S-D01": if (e1 != null) { e.EffectDamage(e1, e.HasEffectiveKeyword(e1, "坚壁") ? 4 : 3, c.Name); } break;
                 case "S-D02":
                     if (t1 != null) { e.Heal(t1, IsConstruct(t1) ? 4 : 2); }
                     break;
@@ -511,7 +576,7 @@ namespace Jieqiao
                         e.Draw(camp, 1);
                     }
                     break;
-                case "S-G04": if (t2 != null) { e.Heal(t2, IsTroll(t2) ? 5 : 3); } break;
+                case "S-G04": if (t1 != null) { e.Heal(t1, IsTroll(t1) ? 5 : 3); } break;
                 // 血族
                 case "S-V01": if (e1 != null) { e.EffectDamage(e1, 3, c.Name); } break;
                 case "S-V02":
@@ -522,7 +587,21 @@ namespace Jieqiao
                     }
                     break;
                 case "S-V03":
-                    if (t1 != null) { MoveToOtherRow(p, t1); if (!t1.AttackedThisRound) { t1.SneakActive = true; } }
+                    if (t1 != null)
+                    {
+                        // 落位由玩家指定（a.TargetSlot，必须是对面一排的空格）；
+                        // 没指定时才退回"另一排第一个空格"。以前无条件自动挑空格，玩家选不了落点。
+                        if (a.TargetSlot >= 0 && p.At(a.TargetSlot) == null
+                            && V06Slot.IsFront(a.TargetSlot) != V06Slot.IsFront(t1.Slot))
+                        {
+                            MoveUnit(p, t1, a.TargetSlot);
+                        }
+                        else if (a.TargetSlot < 0)
+                        {
+                            MoveToOtherRow(p, t1);
+                        }
+                        if (!t1.AttackedThisRound) { t1.SneakActive = true; }
+                    }
                     break;
                 case "S-V04": e.Draw(camp, 2); break;
                 // 荒原
@@ -540,7 +619,7 @@ namespace Jieqiao
                         }
                     }
                     break;
-                case "S-O04": if (t2 != null) { e.Heal(t2, 3); } e.Draw(camp, 1); break;
+                case "S-O04": if (t1 != null) { e.Heal(t1, 3); } e.Draw(camp, 1); break;
                 // 龙群
                 case "S-R01":
                     for (int i = 0; i < V06Slot.FrontCount; i++) { V06Unit u = foe.At(i); if (u != null) { e.EffectDamage(u, 2, c.Name); } }
@@ -576,6 +655,7 @@ namespace Jieqiao
                     return false;
             }
             e.CleanupDeaths();
+            e.AfterNonUnitAction();
             return true;
         }
 

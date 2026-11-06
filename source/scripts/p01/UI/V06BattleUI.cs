@@ -20,23 +20,25 @@ namespace Jieqiao.UI
         // ── 布局（设计空间 1600×900，左上角原点）──────────────────
         private const float RefW = 1600f;
         private const float RefH = 900f;
-        // 卡框统一 3:4（立绘素材就是 3:4）：棋盘格 90×120、手牌 99×132、预备 81×108、详情 180×240。
-        // 之前棋盘格是 118×108 的近方形，竖版立绘只能"按宽度铺满"，人物上半身被裁掉，看着别扭。
-        private const float SlotW = 90f;
-        private const float SlotH = 120f;
-        private const float SlotX0 = 475f;      // 三格的左边界（3×90 + 2×10 间隙居中）
-        private const float SlotStep = 100f;
+        // 卡框统一 3:4（立绘素材就是 3:4）。
+        // 界面对局界面改版：棋盘格 90×120 → 112×149、手牌 96×128 → 112×149，
+        // 四行棋盘与手牌全部加大，纵向靠"压缩中间空白带 + 左右两栏合并"腾出来。
+        private const float SlotW = 112f;
+        private const float SlotH = 149f;
+        private const float SlotX0 = 618f;      // 三格的左边界（3×112 + 2×14 = 364，居中于 800）
+        private const float SlotStep = 126f;
         private const float EnemyBackY = 44f;
-        private const float EnemyFrontY = 172f;
-        private const float MineFrontY = 446f;
-        private const float MineBackY = 574f;
-        private const float EnemyFlagY = 6f;
-        private const float MineFlagY = 700f;
-        private const float HandY = 744f;
-        private const float HandX0 = 96f;
-        private const float HandStep = 105f;
-        private const float HandW = 96f;
-        private const float HandH = 128f;
+        private const float EnemyFrontY = 196f;
+        private const float MineFrontY = 395f;
+        private const float MineBackY = 547f;
+        private const float EnemyFlagY = 4f;
+        private const float MineFlagY = 699f;
+        private const float HandY = 737f;
+        private const float HandX0 = 24f;
+        private const float HandStep = 122f;
+        private const float HandW = 112f;
+        private const float HandH = 149f;
+        private const float HandLiftY = 8f;      // 选中的手牌上抬，给"已选中"第二个信号
 
         private V06Engine _engine;
         private bool _running;
@@ -49,6 +51,7 @@ namespace Jieqiao.UI
         private Image[] _slotBg = new Image[12];         // 0-5 我方，6-11 敌方（各自 0-2 前排、3-5 后排）
         private Text[] _slotMain = new Text[12];
         private Text[] _slotSub = new Text[12];
+        private Text[] _slotKw = new Text[12];
         private Button[] _slotBtn = new Button[12];
         private Image[] _slotArt = new Image[12];
         // V0.7：GPT 交付的卡框九宫格（普通/选中/目标），叠在格子最上层、只画边框
@@ -80,6 +83,11 @@ namespace Jieqiao.UI
         /// <summary>我在联机里坐哪一方。</summary>
         public bool netIsHost = true;
         private bool _resultRecorded;
+        /// <summary>结算演出只做一次。Update 每帧都会调 ShowResult，若不加这道闸，
+        /// 每帧都会新生成一张全屏叠加图 + 播一次音效 + 重启补间，几十秒内堆出上百张
+        /// 全屏图层把渲染拖死（实机表现为"输掉后屏幕发白、卡死"）。</summary>
+        private bool _resultShown;
+        private bool _fxErrorLogged;
         /// <summary>本实例是否真的开过一局（重载自愈只在这个前提下才允许自己重开）。</summary>
         private bool _everStarted;
         private string _myDeckName = "", _foeDeckName = "";
@@ -120,6 +128,11 @@ namespace Jieqiao.UI
         // ── V0.7 第 2 批动画接线（余烬层 / 发牌 / 翻牌 / 进化环 / 融合环 / 旗闪 / 回合横幅）──
         private Image _emberOverlay;
         private Image _turnBannerImg;
+        private Text _turnBannerText;
+        private Image _battleBg;               // 战斗背景（战况牌生效时整块换图）
+        private Sprite _battleBgDefault;
+        private Text _fieldLabel;
+        private string _fieldApplied = "";
         private Image _pressureFx;          // 第 3 批：轮末压力警告（全屏四周红雾，循环）
         private int _lastHandCount = -1;
         private int _lastMineFlag = -1;
@@ -136,7 +149,24 @@ namespace Jieqiao.UI
         private int _selUid = -1;
         private bool _powerStrike;
         private bool _swapMode;
-        private string _hint = "点手牌选牌，再点高亮格/目标执行。";
+        // ── 提示：分"一次性消息"与"状态引导"两层 ──
+        // 一次性消息（点错原因、刚做了什么）由各处 handler 直接赋值，3 秒后自动让位；
+        // 状态引导由 BuildGuidance() 按当前局面算出，永远有内容。
+        // 之所以做成 property：30 处 `_hint = "..."` 不用逐个改，赋值即自动打时间戳。
+        private string _hintMsg;
+        private float _hintMsgAt = -99f;
+        private const float HintMsgLife = 3f;
+        /// <summary>刚用带汲取的单位打了远征旗：等这一击结算完，在提示行说明"打旗不触发汲取"。</summary>
+        private bool _drainFlagNote;
+        /// <summary>S-V03 这类"单位 + 落点"两段式战术：已选来源单位，等玩家点落点。</summary>
+        private int _pendingTacticUid = -1;
+        /// <summary>换位确认弹窗的根节点。</summary>
+        private GameObject _swapConfirmLayer;
+        private string _hint
+        {
+            get { return _hintMsg; }
+            set { _hintMsg = value; _hintMsgAt = Time.unscaledTime; }
+        }
         private string _lastError;
 
         private void Start()
@@ -196,7 +226,7 @@ namespace Jieqiao.UI
             _layoutRoot.sizeDelta = new Vector2(RefW, RefH);
             _root = _layoutRoot;
 
-            // 背景（用户提供的暮色浮岛与断裂星环）
+            // 背景（用户提供的暮色浮岛与断裂星环）；打出战况牌后换成对应场地背景
             Sprite bgSprite = Resources.Load<Sprite>("Art/battle_bg");
             if (bgSprite != null)
             {
@@ -213,7 +243,13 @@ namespace Jieqiao.UI
                 bgImg.preserveAspect = false;
                 bgImg.color = new Color(0.72f, 0.76f, 0.84f, 1f);
                 bgImg.raycastTarget = false;
+                _battleBg = bgImg;
+                _battleBgDefault = bgSprite;
             }
+            // 场地名（打出战况牌后显示"场地：工坊防线（我方）"，让玩家知道场上生效的是什么）
+            _fieldLabel = UiKit.Label(_root, "FieldLabel", 20f, 42f, 1200f, 24f, "", 15,
+                TextAnchor.MiddleLeft, UiKit.Selected);
+            _fieldLabel.raycastTarget = false;
             Image scrim = UiKit.Panel(_root, "Scrim", 0f, 0f, RefW, RefH, new Color(0.06f, 0.07f, 0.09f, 0.58f));
             scrim.raycastTarget = false;   // 纯压暗层，不能吃掉点击（实机测试里它挡住过响应按钮）
 
@@ -252,15 +288,21 @@ namespace Jieqiao.UI
                     var artGo = new GameObject("Art", typeof(RectTransform), typeof(Image));
                     artGo.transform.SetParent(bg.transform, false);
                     _slotArt[idx] = artGo.GetComponent<Image>();
-                    Image topStrip = UiKit.Panel(bg.transform, "TopStrip", 0f, 0f, SlotW, 30f, new Color(0.04f, 0.05f, 0.07f, 0.68f));
+                    // 名称条（顶部 26，14 号）：名字单独一行，不再和数值挤在一起
+                    Image topStrip = UiKit.Panel(bg.transform, "TopStrip", 0f, 0f, SlotW, 26f, new Color(0.04f, 0.05f, 0.07f, 0.80f));
                     topStrip.raycastTarget = false;
-                    Text main = UiKit.Label(bg.transform, "Main", 2f, 1f, SlotW - 4f, 29f, "", 12, TextAnchor.MiddleCenter, UiKit.TextMain);
+                    Text main = UiKit.Label(bg.transform, "Main", 3f, 1f, SlotW - 6f, 24f, "", 14, TextAnchor.MiddleCenter, UiKit.TextMain);
                     var sh = main.gameObject.AddComponent<Shadow>();
                     sh.effectColor = new Color(0f, 0f, 0f, 0.9f);
                     sh.effectDistance = new Vector2(1f, -1f);
-                    Image botStrip = UiKit.Panel(bg.transform, "BotStrip", 0f, SlotH - 20f, SlotW, 20f, new Color(0.04f, 0.05f, 0.07f, 0.68f));
+                    // 关键词条（数值条上方 18，11 号金色）
+                    Image kwStrip = UiKit.Panel(bg.transform, "KwStrip", 0f, SlotH - 48f, SlotW, 18f, new Color(0.04f, 0.05f, 0.07f, 0.62f));
+                    kwStrip.raycastTarget = false;
+                    Text kw = UiKit.Label(bg.transform, "Kw", 3f, SlotH - 48f, SlotW - 6f, 18f, "", 11, TextAnchor.MiddleCenter, UiKit.Selected);
+                    // 数值条（底部 30，16 号）：攻/血独立、够大
+                    Image botStrip = UiKit.Panel(bg.transform, "BotStrip", 0f, SlotH - 30f, SlotW, 30f, new Color(0.04f, 0.05f, 0.07f, 0.86f));
                     botStrip.raycastTarget = false;
-                    Text sub = UiKit.Label(bg.transform, "Sub", 2f, SlotH - 20f, SlotW - 4f, 20f, "", 10, TextAnchor.MiddleCenter, UiKit.TextDim);
+                    Text sub = UiKit.Label(bg.transform, "Sub", 3f, SlotH - 30f, SlotW - 6f, 30f, "", 16, TextAnchor.MiddleCenter, UiKit.TextMain);
                     var btn = bg.gameObject.AddComponent<Button>();
                     int campCopy = camp;
                     int slotCopy = s;
@@ -269,18 +311,22 @@ namespace Jieqiao.UI
                     _slotBg[idx] = bg;
                     _slotMain[idx] = main;
                     _slotSub[idx] = sub;
+                    _slotKw[idx] = kw;
                     _slotBtn[idx] = btn;
                     _slotFrame[idx] = AddSlotFrame(bg);
                 }
-                UiKit.Label(_root, "RowLabel" + camp, 250f, camp == 1 ? EnemyBackY + 30f : MineFrontY + 30f,
-                    110f, 40f, camp == 1 ? "对手" : "我方", 16, TextAnchor.MiddleRight, UiKit.TextDim);
+                UiKit.Label(_root, "RowLabel" + camp, 496f, camp == 1 ? EnemyBackY + 40f : MineFrontY + 40f,
+                    110f, 40f, camp == 1 ? "对手" : "我方", 17, TextAnchor.MiddleRight, UiKit.Selected);
             }
 
-            // 中间信息条
-            _statusText = UiKit.Label(_root, "Status", 20f, 296f, 1200f, 30f, "", 17, TextAnchor.MiddleLeft, UiKit.TextMain);
-            _hintText = UiKit.Label(_root, "Hint", 20f, 326f, 1200f, 26f, "", 15, TextAnchor.MiddleLeft, UiKit.Selected);
-            _detailText = UiKit.Label(_root, "Detail", 20f, 354f, 1200f, 84f, "", 14, TextAnchor.UpperLeft, UiKit.TextDim);
-            _logText = UiKit.Label(_root, "Log", 20f, 442f, 330f, 250f, "", 12, TextAnchor.UpperLeft, UiKit.TextDim);
+            // ── 中央行动条（两排之间那条空白带）：谁在行动 / 剩余费用与主行动 / 下一步提示 ──
+            _statusText = UiKit.Label(_root, "Status", 300f, 348f, 920f, 24f, "", 17, TextAnchor.MiddleCenter, UiKit.TextMain);
+            _hintText = UiKit.Label(_root, "Hint", 300f, 372f, 920f, 22f, "", 15, TextAnchor.MiddleCenter, UiKit.Selected);
+            // ── 左栏：预备 / 已选中 / 战报 ──
+            _detailText = UiKit.Label(_root, "Detail", 306f, 420f, 294f, 126f, "", 14, TextAnchor.UpperLeft, UiKit.TextDim);
+            _logText = UiKit.Label(_root, "Log", 306f, 574f, 294f, 122f, "", 12, TextAnchor.UpperLeft, UiKit.TextDim);
+            UiKit.Label(_root, "DetailTitle", 306f, 396f, 294f, 20f, "已选中", 13, TextAnchor.MiddleLeft, UiKit.Selected);
+            UiKit.Label(_root, "LogTitle", 306f, 552f, 294f, 20f, "战报（最近 8 条）", 13, TextAnchor.MiddleLeft, UiKit.Selected);
 
             // 手牌 9 张
             for (int i = 0; i < 9; i++)
@@ -292,14 +338,18 @@ namespace Jieqiao.UI
                 artGo.transform.SetParent(bg.transform, false);
                 _handArt[i] = artGo.GetComponent<Image>();
                 // 底部信息条：压暗，保证名称与数值在立绘上也读得清
-                Image info = UiKit.Panel(bg.transform, "Info", 0f, HandH - 42f, HandW, 42f, new Color(0.04f, 0.05f, 0.07f, 0.8f));
+                Image info = UiKit.Panel(bg.transform, "Info", 0f, HandH - 50f, HandW, 50f, new Color(0.04f, 0.05f, 0.07f, 0.84f));
                 info.raycastTarget = false;
-                Text top = UiKit.Label(bg.transform, "Top", 4f, 2f, HandW - 8f, 20f, "", 13, TextAnchor.MiddleLeft, UiKit.Selected);
+                // 费用徽记：左上独立小底，17 号数字，不和名称共行
+                Image costBadge = UiKit.Panel(bg.transform, "CostBadge", 4f, 4f, 30f, 26f, new Color(0.06f, 0.07f, 0.10f, 0.86f));
+                costBadge.raycastTarget = false;
+                Text top = UiKit.Label(bg.transform, "Top", 4f, 4f, 30f, 26f, "", 17, TextAnchor.MiddleCenter, UiKit.Selected);
                 var sh2 = top.gameObject.AddComponent<Shadow>();
                 sh2.effectColor = new Color(0f, 0f, 0f, 0.9f);
                 sh2.effectDistance = new Vector2(1f, -1f);
-                Text main = UiKit.Label(bg.transform, "Main", 2f, HandH - 42f, HandW - 4f, 22f, "", 13, TextAnchor.MiddleCenter, UiKit.TextMain);
-                Text sub = UiKit.Label(bg.transform, "Sub", 2f, HandH - 20f, HandW - 4f, 20f, "", 11, TextAnchor.MiddleCenter, UiKit.TextDim);
+                // 名称 15 号 / 副行 13 号
+                Text main = UiKit.Label(bg.transform, "Main", 2f, HandH - 50f, HandW - 4f, 26f, "", 15, TextAnchor.MiddleCenter, UiKit.TextMain);
+                Text sub = UiKit.Label(bg.transform, "Sub", 2f, HandH - 24f, HandW - 4f, 22f, "", 13, TextAnchor.MiddleCenter, UiKit.TextDim);
                 var btn = bg.gameObject.AddComponent<Button>();
                 int iCopy = i;
                 btn.onClick.AddListener(delegate { OnHandClicked(iCopy); });
@@ -327,60 +377,63 @@ namespace Jieqiao.UI
             _fx.MineFlagRect = _mineFlagFill == null ? null : _mineFlagFill.rectTransform;
             _fx.EnemyFlagRect = _enemyFlagFill == null ? null : _enemyFlagFill.rectTransform;
 
-            // 右侧按钮区
-            _fuseBtn = UiKit.Button(_root, "BtnFuse", 1240f, 258f, 150f, 34f, "融合（1 点）", UiKit.ButtonNormal, DoFuse);
-            UiKit.Button(_root, "BtnBackLobby", 1240f, 214f, 150f, 34f, "返回大厅", UiKit.MyCamp, BackToLobby);            _powerBtn = UiKit.Button(_root, "BtnPower", 1240f, 300f, 150f, 34f, "强攻：关", UiKit.ButtonNormal, TogglePower);
-            _swapBtn = UiKit.Button(_root, "BtnSwap", 1240f, 342f, 150f, 34f, "换位：关", UiKit.ButtonNormal, ToggleSwap);
-            _passBtn = UiKit.Button(_root, "BtnPass", 1240f, 384f, 150f, 34f, "让过", UiKit.ButtonNormal, DoPass);
-            _coverBtn = UiKit.Button(_root, "BtnCover", 1240f, 426f, 150f, 34f, "掩护（1 点）", UiKit.ButtonNormal, DoCover);
-            _declineBtn = UiKit.Button(_root, "BtnDecline", 1240f, 468f, 150f, 34f, "放弃响应", UiKit.ButtonNormal, DoDecline);
-            _restartBtn = UiKit.Button(_root, "BtnRestart", 1240f, 510f, 150f, 34f, "重开一局", UiKit.ButtonNormal, RestartGame);
-            // 预备区：3 张晋阶 + 3 张支援，全部公开，每张每局只能调用一次
-            _reserveTitle = UiKit.Label(_root, "ReserveTitle", 1240f, 556f, 340f, 22f,
-                "预备（每张每局一次）", 13, TextAnchor.MiddleLeft, UiKit.TextDim);
-            _respondTitle = UiKit.Label(_root, "RespondTitle", 1240f, 556f, 340f, 22f,
-                "对手正在攻击：选择响应（每轮 1 张）", 13, TextAnchor.MiddleLeft, UiKit.Selected);
+            // ── 右栏：行动按钮（加宽到 336，高度 44，手指/鼠标都好点）──
+            UiKit.Label(_root, "ActTitle", 1240f, 200f, 336f, 22f, "行动", 16, TextAnchor.MiddleLeft, UiKit.Selected);
+            _fuseBtn = UiKit.Button(_root, "BtnFuse", 1240f, 226f, 336f, 44f, "融合（1 行动）", UiKit.ButtonNormal, DoFuse);
+            _powerBtn = UiKit.Button(_root, "BtnPower", 1240f, 274f, 336f, 44f, "强攻：关", UiKit.ButtonNormal, TogglePower);
+            _swapBtn = UiKit.Button(_root, "BtnSwap", 1240f, 322f, 336f, 44f, "换位：关", UiKit.ButtonNormal, ToggleSwap);
+            _passBtn = UiKit.Button(_root, "BtnPass", 1240f, 370f, 336f, 44f, "让过", UiKit.ButtonNormal, DoPass);
+            _coverBtn = UiKit.Button(_root, "BtnCover", 1240f, 418f, 336f, 44f, "掩护（1 点）", UiKit.ButtonNormal, DoCover);
+            _declineBtn = UiKit.Button(_root, "BtnDecline", 1240f, 466f, 336f, 44f, "放弃响应", UiKit.ButtonNormal, DoDecline);
+            AttachActionTips();
+            // 响应窗口的备选牌（对手正在攻击时出现，盖在同一列）
+            _respondTitle = UiKit.Label(_root, "RespondTitle", 1240f, 522f, 336f, 22f,
+                "对手正在攻击：选一张响应（每轮 1 张）", 13, TextAnchor.MiddleLeft, UiKit.Selected);
             _respondTitle.gameObject.SetActive(false);
             for (int i = 0; i < 3; i++)
             {
-                float ry = 582f + i * 40f;
-                Button rb = UiKit.Button(_root, "Respond" + i, 1240f, ry, 340f, 34f, "", UiKit.ButtonNormal, null);
+                float ry = 546f + i * 48f;
+                Button rb = UiKit.Button(_root, "Respond" + i, 1240f, ry, 336f, 44f, "", UiKit.ButtonNormal, null);
                 int copy = i;
                 rb.onClick.AddListener(delegate { OnRespondClicked(copy); });
                 _respondBg[i] = rb.GetComponent<Image>();
                 _respondText[i] = rb.GetComponentInChildren<Text>();
                 rb.gameObject.SetActive(false);
             }
+            // 关键规则常驻说明（缩短到一眼能读完）
+            UiKit.Label(_root, "RulesTip", 1240f, 702f, 336f, 118f,
+                "· 前排才能主动攻击；敌前排空才能打旗\n"
+                + "· 强攻 攻击+1、掩护 受伤−1，每轮各 1 次\n"
+                + "· 换位免费、每轮 1 次，不占主行动\n"
+                + "· 第 8 轮起每轮末双方旗扣血 1/1/2/2/3\n"
+                + "· 第 12 轮结束后比旗血，多者胜\n"
+                + "· 右键任意卡面看完整说明与术语",
+                12, TextAnchor.UpperLeft, UiKit.TextDim);
+            // 底部：重开 / 返回
+            _restartBtn = UiKit.Button(_root, "BtnRestart", 1240f, 828f, 162f, 42f, "重开一局", UiKit.ButtonNormal, RestartGame);
+            UiKit.Button(_root, "BtnBackLobby", 1414f, 828f, 162f, 42f, "返回大厅", UiKit.MyCamp, BackToLobby);
+            // 预备区：3 张晋阶 + 3 张支援（移到左栏，靠近手牌，每张每局一次）
+            _reserveTitle = UiKit.Label(_root, "ReserveTitle", 24f, 396f, 276f, 22f,
+                "预备 · 每张每局一次", 13, TextAnchor.MiddleLeft, UiKit.Selected);
             for (int i = 0; i < 6; i++)
             {
-                float rx = 1244f + (i % 3) * 112f;
-                float ry = 582f + (i / 3) * 122f;
-                Image bg = UiKit.Panel(_root, "Reserve" + i, rx, ry, 81f, 108f, UiKit.CardBg);
+                float rx = 24f + (i % 3) * 92f;
+                float ry = 422f + (i / 3) * 120f;
+                Image bg = UiKit.Panel(_root, "Reserve" + i, rx, ry, 84f, 112f, UiKit.CardBg);
                 bg.gameObject.AddComponent<RectMask2D>();
                 var artGo = new GameObject("Art", typeof(RectTransform), typeof(Image));
                 artGo.transform.SetParent(bg.transform, false);
                 _reserveArt[i] = artGo.GetComponent<Image>();
-                Image info = UiKit.Panel(bg.transform, "Info", 0f, 66f, 81f, 42f, new Color(0.04f, 0.05f, 0.07f, 0.8f));
+                Image info = UiKit.Panel(bg.transform, "Info", 0f, 70f, 84f, 42f, new Color(0.04f, 0.05f, 0.07f, 0.84f));
                 info.raycastTarget = false;
-                Text main = UiKit.Label(bg.transform, "Main", 1f, 66f, 79f, 22f, "", 11, TextAnchor.MiddleCenter, UiKit.TextMain);
-                Text sub = UiKit.Label(bg.transform, "Sub", 1f, 88f, 79f, 20f, "", 10, TextAnchor.MiddleCenter, UiKit.TextDim);
+                Text main = UiKit.Label(bg.transform, "Main", 1f, 70f, 82f, 22f, "", 12, TextAnchor.MiddleCenter, UiKit.TextMain);
+                Text sub = UiKit.Label(bg.transform, "Sub", 1f, 92f, 82f, 20f, "", 11, TextAnchor.MiddleCenter, UiKit.TextDim);
                 var btn = bg.gameObject.AddComponent<Button>();
                 int copy = i;
                 btn.onClick.AddListener(delegate { OnReserveClicked(copy); });
                 AttachRightClick(bg.gameObject, "Reserve" + i);
                 _reserveBg[i] = bg; _reserveMain[i] = main; _reserveSub[i] = sub;
             }
-            UiKit.Label(_root, "RulesTip", 1240f, 812f, 340f, 46f,
-                "前排才能主动攻击；敌前排空才可打旗。强攻 +1 / 掩护 −1 每轮各 1 次。第 7 轮起双方旗各受压力，半速曲线；第 12 轮结算后比旗血。",
-                11, TextAnchor.UpperLeft, UiKit.TextDim);
-
-            // 右侧大立绘：选中卡牌或单位时展示
-            Image artBox = UiKit.Panel(_root, "DetailArtBox", 1396f, 300f, 180f, 240f, new Color(0.09f, 0.10f, 0.13f, 0.85f));
-            artBox.gameObject.AddComponent<RectMask2D>();
-            var dGo = new GameObject("Art", typeof(RectTransform), typeof(Image));
-            dGo.transform.SetParent(artBox.transform, false);
-            _detailArt = dGo.GetComponent<Image>();
-            _detailArt.enabled = false;
 
             // ── 右键详览：全屏遮罩 + 居中大卡（默认隐藏）──
             var zoomGo = new GameObject("CardZoom", typeof(RectTransform), typeof(Image), typeof(Button));
@@ -484,6 +537,18 @@ namespace Jieqiao.UI
         {
             if (paused) { return; }
             ApplyLayoutScale();
+            // ESC:取消当前选择(手牌/预备/放大层),不消耗任何资源
+            if (Input.GetKeyDown(KeyCode.Escape) && _engine != null && !_engine.Finished)
+            {
+                if (_zoomLayer != null && _zoomLayer.activeSelf) { HideZoom(); }
+                else if (_swapConfirmLayer != null) { CloseSwapConfirm(); _swapMode = false; _hint = "已取消换位。"; Refresh(); }
+                else if (_selHand >= 0 || _selUid >= 0 || _selReserve >= 0 || _swapMode || _pendingTacticUid >= 0)
+                {
+                    ClearSelection();
+                    _hint = "已取消选择。";
+                    Refresh();
+                }
+            }
             if (_engine == null)
             {
                 // 诊断 + 自愈：脚本重载会清空这个字段但把界面树留下，
@@ -662,6 +727,7 @@ namespace Jieqiao.UI
                     effect += "\n可融合：" + string.Join("、", fuseHints.ToArray());
                 }
                 view.EffectText = effect;
+                view.TermText = V06Terms.Block(c);
                 view.ArtPath = "";          // 大卡已在左侧显示立绘，面板不再重复
                 view.CanPlayNow = CanUseThisCardNow(cardId, unit);
                 _infoPanel.Show(view);
@@ -677,6 +743,13 @@ namespace Jieqiao.UI
         private void PlayScreenOnce(string animName, float lifeSeconds)
         {
             if (!V06UiV07.HasAnim(animName)) { return; }
+            // 同名全屏特效同一时刻只留一个：结算路径曾经每帧调一次，
+            // 堆出上百张全屏 Image（各自跑协程）把渲染拖死，表现为"屏幕发白卡住"。
+            if (_root != null)
+            {
+                Transform old = _root.Find("ScreenFx_" + animName);
+                if (old != null) { Destroy(old.gameObject); }
+            }
             var go = new GameObject("ScreenFx_" + animName, typeof(RectTransform), typeof(Image));
             go.transform.SetParent(_root, false);
             var rt = go.GetComponent<RectTransform>();
@@ -797,6 +870,8 @@ namespace Jieqiao.UI
                     Sprite want = _frameNormal;
                     if (u != null && camp == _playerCamp && u.Uid == _selUid) { want = _frameSelected; }
                     else if (u != null && (IsEnemyAttackTarget(u.Uid) || IsTacticTarget(u.Uid))) { want = _frameTarget; }
+                    else if (u != null && _swapMode && _selUid >= 0 && camp == _playerCamp && u.Uid != _selUid
+                        && FindSwapUnit(_selUid, u.Uid) != null) { want = _frameTarget; }
                     else if (u == null && IsDeployTarget(camp, s)) { want = _frameTarget; }
                     frame.sprite = want;
                     frame.enabled = want != null;
@@ -966,25 +1041,92 @@ namespace Jieqiao.UI
             Destroy(go, 0.9f);
         }
 
-        /// <summary>回合横幅（我方 / 对手回合开始各弹一次）。</summary>
+        /// <summary>回合横幅（我方 / 对手回合开始各弹一次）。
+        /// 以前只播一张彩带素材、上面没有字，玩家看到的是一条"不知道干什么的蓝色条带"，
+        /// 现在把「轮到我方／对手行动 + 第 N 轮」直接压在横幅上；素材缺失时退化成深色字牌。</summary>
         private void PlayTurnBanner(bool mine)
         {
-            Sprite[] frames = V06UiV07.Anim("anim_turn_banner");
-            if (frames == null) { return; }
             if (_turnBannerImg == null)
             {
-                _turnBannerImg = UiKit.Panel(_root, "TurnBanner", 544f, 386f, 512f, 102f, Color.white);
+                _turnBannerImg = UiKit.Panel(_root, "TurnBanner", 544f, 372f, 512f, 102f, Color.white);
                 _turnBannerImg.raycastTarget = false;
-                _turnBannerImg.preserveAspect = true;
+                _turnBannerImg.preserveAspect = false;
+                _turnBannerText = UiKit.Label(_turnBannerImg.transform, "T", 0f, 24f, 512f, 54f, "", 28,
+                    TextAnchor.MiddleCenter, Color.white);
+                var shT = _turnBannerText.gameObject.AddComponent<Shadow>();
+                shT.effectColor = new Color(0f, 0f, 0f, 0.95f);
+                shT.effectDistance = new Vector2(2f, -2f);
+            }
+            bool hasArt = V06UiV07.Anim("anim_turn_banner") != null;
+            if (hasArt)
+            {
+                _turnBannerImg.color = Color.white;
+                V06UiV07.PlayOnce(_turnBannerImg, "anim_turn_banner", 12f);
+            }
+            else
+            {
+                _turnBannerImg.sprite = null;
+                _turnBannerImg.color = new Color(0.06f, 0.08f, 0.12f, 0.90f);   // 无素材 → 深色字牌
+            }
+            if (_turnBannerText != null)
+            {
+                _turnBannerText.text = (mine ? "轮到我方" : "对手行动")
+                    + (_engine != null ? "　第 " + _engine.Round + " 轮" : "");
+                _turnBannerText.color = mine ? new Color(1f, 0.94f, 0.70f) : new Color(0.82f, 0.88f, 1f);
             }
             _turnBannerImg.gameObject.SetActive(true);
-            _turnBannerImg.color = mine ? new Color(1f, 0.96f, 0.82f, 1f) : new Color(0.92f, 0.88f, 1f, 1f);
-            V06UiV07.PlayOnce(_turnBannerImg, "anim_turn_banner", 12f);
-            StartCoroutine(HideAfter(_turnBannerImg.gameObject, 0.85f));
+            if (_turnBannerImg.transform.childCount > 0) { _turnBannerImg.transform.GetChild(0).gameObject.SetActive(true); }
+            StartCoroutine(HideAfter(_turnBannerImg.gameObject, 1.1f));
         }
 
-        private System.Collections.IEnumerator HideAfter(GameObject go, float seconds)
+        /// <summary>
+        /// 战况（场地）牌生效时换战斗背景：我方战况优先，其次是外观战。
+        /// 专用背景按约定放在 Assets/Resources/Art/battle_bg_f01.png … battle_bg_f06.png；
+        /// 找不到就退回默认背景，只在顶部标出场地名（不留白板、也不假装换过图）。
+        /// </summary>
+        private void RefreshBattlefieldVisual()
         {
+            if (_engine == null) { return; }
+            int camp = -1;
+            string fid = _engine.Players[_playerCamp].BattlefieldId;
+            if (!string.IsNullOrEmpty(fid)) { camp = _playerCamp; }
+            else
+            {
+                string foeFid = _engine.Players[1 - _playerCamp].BattlefieldId;
+                if (!string.IsNullOrEmpty(foeFid)) { fid = foeFid; camp = 1 - _playerCamp; }
+            }
+
+            string want = camp < 0 ? "" : fid;
+            if (want == _fieldApplied) { return; }          // 只在场地变化时换图
+            _fieldApplied = want;
+
+            if (camp < 0)
+            {
+                if (_battleBg != null && _battleBgDefault != null) { _battleBg.sprite = _battleBgDefault; }
+                if (_battleBg != null) { _battleBg.color = new Color(0.72f, 0.76f, 0.84f, 1f); }
+                if (_fieldLabel != null) { _fieldLabel.text = ""; }
+                return;
+            }
+
+            V06Card fc = V06Catalog.ById(fid);
+            string fname = fc != null ? fc.Name : fid;
+            Sprite field = Resources.Load<Sprite>("Art/battle_bg_" + fid.ToLowerInvariant());
+            if (_battleBg != null)
+            {
+                _battleBg.sprite = field != null ? field : _battleBgDefault;
+                _battleBg.color = camp == _playerCamp
+                    ? new Color(0.78f, 0.82f, 0.88f, 1f)          // 我方场地：偏亮
+                    : new Color(0.86f, 0.72f, 0.74f, 1f);          // 对手场地：偏暖红，避免混淆
+            }
+            if (_fieldLabel != null)
+            {
+                _fieldLabel.text = "场地：" + fname + "（" + (camp == _playerCamp ? "我方" : "对手") + "）"
+                    + (field == null ? "　· 专用背景待补" : "");
+                _fieldLabel.color = camp == _playerCamp ? UiKit.Selected : new Color(1f, 0.72f, 0.68f);
+            }
+        }
+
+        private System.Collections.IEnumerator HideAfter(GameObject go, float seconds)        {
             float t = 0f;
             while (t < seconds) { t += Time.unscaledDeltaTime; yield return null; }
             if (go != null) { go.SetActive(false); }
@@ -1044,6 +1186,7 @@ namespace Jieqiao.UI
             _lastEnemyFlag = -1;
             _lastActiveCamp = -99;
             _lastRound = -1;
+            _fieldApplied = "";             // 新一局要能重新应用场地背景
             _growthSeen.Clear();
             _fusedSeen.Clear();
             if (_turnBannerImg != null) { _turnBannerImg.gameObject.SetActive(false); }
@@ -1052,6 +1195,9 @@ namespace Jieqiao.UI
             V06Precon pb = V06DeckLibrary.Get(preconB);
             _hint = "新对局开始。你是 " + (pa == null ? "?" : pa.Name) + "，对手是 " + (pb == null ? "?" : pb.Name) + "。";
             if (_resultPanel != null) { _resultPanel.SetActive(false); }
+            if (_banner != null) { _banner.gameObject.SetActive(false); }
+            _resultShown = false;          // 新一局要能重新演出结算（否则第二次输赢不刷新文本）
+            CloseSwapConfirm();
             PlayScreenOnce("anim_coin_toss", 1.0f);   // 第 3 批：开局掷币定先手
             Refresh();
         }
@@ -1062,6 +1208,93 @@ namespace Jieqiao.UI
         }
 
         // ───────────────────────── 刷新 ─────────────────────────
+
+        /// <summary>
+        /// 按当前局面算出"下一步该点哪里"，永远返回非空字符串。
+        /// 优先级：结算 &gt; 响应窗口 &gt; 对手回合 &gt; 我有选中 &gt; 我这回合能做什么。
+        /// 判断一律读 `_actions`（引擎刚枚举出来的合法动作），不自己猜规则，
+        /// 这样"提示"和"实际能点"永远一致。
+        /// </summary>
+        private string BuildGuidance()
+        {
+            if (_engine == null) { return "从大厅开始一局对战。"; }
+            if (_engine.Finished) { return "对局结束：看结算面板，或点右栏『返回大厅』。"; }
+
+            V06Player me = _engine.Players[_playerCamp];
+            bool myTurn = _engine.Active == _playerCamp;
+            bool pending = _engine.PendingAttack != null;
+
+            // ① 响应窗口（对手攻击，等我回应）
+            if (pending && myTurn)
+            {
+                bool canCover = HasActionOfKind(V06ActionKind.Cover);
+                if (_respondActions.Count > 0)
+                {
+                    return "对手攻击中：点『响应』牌" + (canCover ? " 或『掩护』" : "") + "，也可『放弃响应』。";
+                }
+                return "对手攻击中，你没有可用响应" + (canCover ? "（可『掩护』减 1）" : "")
+                    + "：点右下『放弃响应』继续。";
+            }
+            // ② 我已宣告攻击，等对手回应
+            if (pending && !myTurn) { return "对手正在响应这次攻击…"; }
+            // ③ 对手回合
+            if (!myTurn) { return "对手行动中…（右键任意卡面看说明，ESC 取消选择）"; }
+
+            int actsLeft = V06Engine.MainActionsPerRound - me.MainActionsUsed;
+
+            // ④ 我方回合：已有选中 → 告诉它下一步点哪
+            if (_selHand >= 0 && _selHand < me.Hand.Count)
+            {
+                V06Card c = V06Catalog.ById(me.Hand[_selHand]);
+                string nm = c == null ? "这张牌" : "【" + c.Name + "】";
+                if (_pendingTacticUid >= 0)
+                {
+                    V06Unit src = me.ByUid(_pendingTacticUid);
+                    return "已选【" + (src != null ? src.Name : "?") + "】：点它对面一排的高亮空格作为落点；ESC 取消。";
+                }
+                if (HasActionOfKind(V06ActionKind.Deploy)) { return "点高亮格位部署" + nm + "；ESC 取消。"; }
+                if (HasActionOfKind(V06ActionKind.PlayCard)) { return "点高亮的合法目标使用" + nm + "；ESC 取消。"; }
+                return nm + "现在用不了（费用 " + me.ActionPoints + " 点／没有合法目标）；ESC 取消。";
+            }
+            if (_selReserve >= 0 && _selReserve < me.Reserve.Count)
+            {
+                V06Card rc = V06Catalog.ById(me.Reserve[_selReserve]);
+                return "点高亮的己方单位调用预备【" + (rc != null ? rc.Name : "?") + "】；ESC 取消。";
+            }
+            if (_selUid >= 0)
+            {
+                if (_swapMode && HasActionOfKind(V06ActionKind.Swap))
+                {
+                    return "换位模式：点另一排的高亮空格或己方单位作为换位目标（会先弹确认框）；ESC 取消。";
+                }
+                if (HasActionOfKind(V06ActionKind.Attack)) { return "点高亮的敌方目标发动攻击；要与后排单位换位，先点『换位』；ESC 取消。"; }
+                if (HasActionOfKind(V06ActionKind.Swap)) { return "这只本轮不能攻击：点『换位』后再点另一排的空格／单位换位；ESC 取消。"; }
+                return "这只本轮无事可做（已行动／被护卫／射程不足）；ESC 取消。";
+            }
+
+            // ⑤ 我方回合：没选中 → 按"现在能做什么"给菜单
+            bool canDeploy = HasActionOfKind(V06ActionKind.Deploy);
+            bool canPlay = HasActionOfKind(V06ActionKind.PlayCard);
+            bool canAttack = HasActionOfKind(V06ActionKind.Attack);
+            bool canFlag = CanHitFlagNow();
+            bool canSwap = HasActionOfKind(V06ActionKind.Swap);
+
+            var tips = new List<string>();
+            if (canDeploy) { tips.Add("选中手牌部署"); }
+            if (canPlay) { tips.Add("使用战术／装备牌"); }
+            if (canAttack) { tips.Add("点自己单位攻击"); }
+            if (canFlag) { tips.Add("点敌方旗条直击"); }
+            if (tips.Count == 0 && canSwap) { tips.Add("点单位后可换位"); }
+
+            if (tips.Count == 0)
+            {
+                if (actsLeft <= 0) { return "本轮主行动已用完：点右侧『让过』结束回合。"; }
+                if (me.ActionPoints <= 0) { return "本轮费用已用完，能做的都做完了：点『让过』结束回合。"; }
+                return "现在没有能执行的操作：点『让过』结束回合。";
+            }
+            return "轮到你了（剩 " + actsLeft + " 次主行动 · 费用 " + me.ActionPoints + "）："
+                + string.Join("、", tips.ToArray()) + "。";
+        }
 
         private void Refresh()
         {
@@ -1078,20 +1311,28 @@ namespace Jieqiao.UI
                     V06Unit u = p.At(s);
                     if (u == null)
                     {
-                        _slotMain[idx].text = V06Slot.IsFront(s) ? "前排空" : "后排空";
+                        _slotMain[idx].text = V06Slot.IsFront(s) ? "前排空位" : "后排空位";
                         if (_slotArt[idx] != null) { _slotArt[idx].enabled = false; }
-                        _slotSub[idx].text = IsDeployTarget(camp, s) ? "▼ 点击部署" : "";
+                        _slotSub[idx].text = IsDeployTarget(camp, s) ? "点击部署" : "";
+                        _slotSub[idx].color = IsDeployTarget(camp, s) ? UiKit.Selected : UiKit.TextDim;
+                        if (_slotKw[idx] != null) { _slotKw[idx].text = ""; }
                         _slotBg[idx].color = IsDeployTarget(camp, s)
                             ? new Color(0.20f, 0.30f, 0.24f) : new Color(0.12f, 0.13f, 0.16f, 0.75f);
                         continue;
                     }
-                    _slotMain[idx].text = u.Name + " " + u.AtkBaseNow + "/" + u.CurHp;
+                    // 名称单独一行；攻/血放到数值条上，受伤时数字变红
+                    _slotMain[idx].text = u.Name;
                     if (_slotArt[idx] != null) { V06Art.Apply(_slotArt[idx], u.CardId, CostOf(u.CardId), SlotW, SlotH, 0f); }
-                    _slotSub[idx].text = KwLine(u);
+                    _slotSub[idx].text = u.AtkBaseNow + " / " + u.CurHp;
+                    _slotSub[idx].color = u.Damage > 0 ? new Color(1f, 0.62f, 0.55f) : UiKit.TextMain;
+                    if (_slotKw[idx] != null) { _slotKw[idx].text = KwLine(u); }
                     Color baseColor = camp == _playerCamp ? UiKit.MyUnit : UiKit.EnemyUnit;
                     if (_selUid == u.Uid && camp == _playerCamp) { baseColor = new Color(0.30f, 0.34f, 0.16f); }
                     if (IsEnemyAttackTarget(u.Uid)) { baseColor = new Color(0.16f, 0.34f, 0.30f); }
                     if (IsTacticTarget(u.Uid)) { baseColor = new Color(0.20f, 0.26f, 0.40f); }
+                    // 换位模式下的己方目标（另一排的单位）也要亮出来，否则玩家不知道能点谁
+                    if (_swapMode && _selUid >= 0 && camp == _playerCamp && u.Uid != _selUid
+                        && FindSwapUnit(_selUid, u.Uid) != null) { baseColor = new Color(0.26f, 0.30f, 0.44f); }
                     if (u.AttackedThisRound) { baseColor *= 0.7f; }
                     _slotBg[idx].color = baseColor;
 
@@ -1135,21 +1376,31 @@ namespace Jieqiao.UI
                 }
                 V06Card c = V06Catalog.ById(me.Hand[i]);
                 if (c == null) { continue; }
-                _handTop[i].text = c.Cost >= 0 ? (c.Cost + " 点") : "—";
-            _handBg[i].rectTransform.sizeDelta = new Vector2(HandW, HandH);
+                // 费用只留数字（放在左上角徽记里），省下的宽度给名称与数值
+                _handTop[i].text = c.Cost >= 0 ? c.Cost.ToString() : "—";
+                _handBg[i].rectTransform.sizeDelta = new Vector2(HandW, HandH);
+                // 选中的手牌上抬 8px，作为"已选中"的第二个信号（不只靠边框颜色）
+                float hx = HandX0 + i * HandStep;
+                _handBg[i].rectTransform.anchoredPosition = new Vector2(hx, -(HandY - (i == _selHand ? HandLiftY : 0f)));
                 if (_handArt[i] != null) { V06Art.Apply(_handArt[i], c.Id, c.Cost, HandW, HandH, 0f); }
                 _handMain[i].text = c.Name;
-                _handSub[i].text = HandSubLine(c);
+                string sub = HandSubLine(c);
+                if (c.Cost > me.ActionPoints) { sub += "　缺费" + (c.Cost - me.ActionPoints); }
+                else if (!_engine.MainActionsLeft(_playerCamp)) { sub += "　行动已用完"; }
+                _handSub[i].text = sub;
                 Color col = UiKit.CardBg;
                 if (i == _selHand) { col = new Color(0.30f, 0.32f, 0.14f); }
                 else if (CanUseNow(c)) { col = new Color(0.15f, 0.26f, 0.20f); }
                 else { col = new Color(0.16f, 0.16f, 0.18f); }
                 _handBg[i].color = col;
+                _handSub[i].color = (c.Cost > me.ActionPoints || !_engine.MainActionsLeft(_playerCamp))
+                    ? new Color(1f, 0.62f, 0.55f) : UiKit.TextDim;
             }
 
             // 响应窗口：优先显示响应面板，预备区暂时隐藏（对手回合本来也不能调用预备）
             _respondActions.Clear();
             bool inResponse = _engine.PendingAttack != null && _engine.Active == _playerCamp;
+            if (_engine.PendingAttack != null && _engine.Active != _playerCamp) { _hint = "对手正在响应这次攻击…"; }
             if (inResponse)
             {
                 for (int i = 0; i < _actions.Count; i++)
@@ -1160,6 +1411,16 @@ namespace Jieqiao.UI
             if (_respondTitle != null)
             {
                 _respondTitle.gameObject.SetActive(inResponse);
+                // 没有响应牌时必须说明白，否则玩家看到的只是"下面三个按钮没了"，
+                // 加上手牌/格位都点不动，就会以为整回合卡死（实机反馈过）。
+                if (inResponse)
+                {
+                    bool canCover = HasActionOfKind(V06ActionKind.Cover);
+                    _respondTitle.text = _respondActions.Count > 0
+                        ? ("对手攻击中：选一张响应（每轮 1 张）" + (canCover ? "，或点『掩护』" : ""))
+                        : ("对手攻击中，你没有可用的响应牌" + (canCover ? "（可点『掩护』减 1）" : "")
+                           + "：点下方『放弃响应』继续");
+                }
                 if (_reserveTitle != null) { _reserveTitle.gameObject.SetActive(!inResponse); }
                 for (int i = 0; i < 3; i++)
                 {
@@ -1186,7 +1447,7 @@ namespace Jieqiao.UI
                     bool used = me.ReserveUsed.Contains(rc.Id);
                     _reserveMain[i].text = rc.Name;
                     _reserveSub[i].text = (rc.Cost >= 0 ? rc.Cost + " 点 " : "") + (used ? "（已用）" : (CanUseNow(rc) ? "可调用" : "条件不足"));
-                    if (_reserveArt[i] != null) { V06Art.Apply(_reserveArt[i], rc.Id, rc.Cost, 81f, 108f, 0f); }
+                    if (_reserveArt[i] != null) { V06Art.Apply(_reserveArt[i], rc.Id, rc.Cost, 84f, 112f, 0f); }
                     _reserveBg[i].color = used ? new Color(0.13f, 0.13f, 0.14f)
                         : (i == _selReserve ? new Color(0.30f, 0.32f, 0.14f)
                         : (CanUseNow(rc) ? new Color(0.14f, 0.22f, 0.26f) : UiKit.CardBg));
@@ -1218,7 +1479,7 @@ namespace Jieqiao.UI
             _lastMineFlag = f0;
             _lastEnemyFlag = f1;
             // 第 3 批：轮数变化 → 计时器跳动
-            if (_lastRound >= 0 && _engine.Round != _lastRound && !_engine.Finished) { PlayScreenOnce("anim_round_tick", 0.6f); }
+            if (_lastRound >= 0 && _engine.Round != _lastRound && !_engine.Finished) { PlayScreenOnce("anim_round_tick", 0.6f); V06Audio.Play("R39"); }
             _lastRound = _engine.Round;
             // 第 3 批：进入压力阶段 → 四周红雾（循环，随压力加深）
             if (_engine.Round >= V06Engine.PressureStartRound && !_engine.Finished)
@@ -1243,18 +1504,31 @@ namespace Jieqiao.UI
             }
             _lastActiveCamp = _engine.Active;
 
-            // 状态行
+            // 场地（战况牌）：整块换背景 + 顶部标出场地名，让玩家知道场上生效的是什么
+            RefreshBattlefieldVisual();
+
+            // 状态行（精简版：只留当下要看的四项，避免过长被截断）
             V06Player foe = _engine.Players[1 - _playerCamp];
             string turnText = _engine.Finished ? "对局结束" : (myTurn ? "▶ 你的行动" : "对手思考中…");
             int pressure = _engine.Round >= V06Engine.PressureStartRound
                 ? (_engine.Round - V06Engine.PressureStartRound + 1) : 0;
             _statusText.text = turnText
-                + "　│　第 " + _engine.Round + " / " + V06Engine.MaxRounds + " 轮（先手：" + (_engine.Initiative == _playerCamp ? "我方" : "对手") + "）"
-                + "　│　行动点 " + me.ActionPoints + "　主行动 " + (V06Engine.MainActionsPerRound - me.MainActionsUsed) + "/" + V06Engine.MainActionsPerRound
-                + "　│　对手行动点 " + foe.ActionPoints + "　主行动 " + (V06Engine.MainActionsPerRound - foe.MainActionsUsed) + "/" + V06Engine.MainActionsPerRound
+                + "　第 " + _engine.Round + "/" + V06Engine.MaxRounds + " 轮"
+                + "　│　费用 " + me.ActionPoints + " · 主行动 " + (V06Engine.MainActionsPerRound - me.MainActionsUsed) + "/" + V06Engine.MainActionsPerRound
+                + "　│　对手 费用 " + foe.ActionPoints + " · 行动 " + (V06Engine.MainActionsPerRound - foe.MainActionsUsed) + "/" + V06Engine.MainActionsPerRound
                 + (pressure > 0 ? "　│　轮末压力 " + pressure : "");
+            _statusText.color = _engine.Finished ? UiKit.TextMain : (myTurn ? UiKit.TextMain : UiKit.TextDim);
 
-            _hintText.text = _hint + (_lastError != null ? "　［" + _lastError + "］" : "") + "　（右键卡面可放大看说明）";
+            // 提示行：一次性消息优先（3 秒内），否则显示按当前局面算出的"下一步该点哪里"
+            // 打旗那一击结算完之后，明确告诉玩家"汲取为什么不触发"（这行只出现一次）
+            if (_drainFlagNote && _engine.PendingAttack == null)
+            {
+                _drainFlagNote = false;
+                _hint = "攻击远征旗不触发汲取：汲取只在打敌单位造成伤害时生效。";
+            }
+            bool msgFresh = !string.IsNullOrEmpty(_hintMsg) && (Time.unscaledTime - _hintMsgAt) < HintMsgLife;
+            _hintText.text = (msgFresh ? _hintMsg : BuildGuidance())
+                + (_lastError != null ? "　［" + _lastError + "］" : "");
 
             // 详情：选中的牌/单位
             _detailText.text = DetailLine();
@@ -1272,22 +1546,41 @@ namespace Jieqiao.UI
                 else { V06Art.Apply(_detailArt, selId, selCost, 180f, 240f, 0f); }
             }
 
-            // 日志尾巴
+            // 日志尾巴（左栏放得下 8 条）
             var sb = new System.Text.StringBuilder();
-            int from = Mathf.Max(0, _engine.Log.Count - 14);
+            int from = Mathf.Max(0, _engine.Log.Count - 8);
             for (int i = from; i < _engine.Log.Count; i++) { sb.AppendLine(_engine.Log[i]); }
             _logText.text = sb.ToString();
 
             // 按钮可用性
             bool resp = _engine.PendingAttack != null && _engine.Active == _playerCamp;
+            // 响应窗口里"，强攻/换位/融合/让过"其实都提交不了（引擎会退回"响应窗口只能响应/掩护/放弃"），
+            // 以前它们仍显示为可点，玩家点了没反应 → 以为整回合卡死。这里统一禁用，只留响应／掩护／放弃。
+            bool normalTurn = myTurn && !resp;
             _powerBtn.GetComponentInChildren<Text>().text = _powerStrike ? "强攻：开" : "强攻：关";
             _swapBtn.GetComponentInChildren<Text>().text = _swapMode ? "换位：开" : "换位：关";
-            _powerBtn.interactable = myTurn && HasActionOfKind(V06ActionKind.Attack);
-            _swapBtn.interactable = myTurn && HasActionOfKind(V06ActionKind.Swap);
-            if (_fuseBtn != null) { _fuseBtn.interactable = myTurn && HasActionOfKind(V06ActionKind.Fuse); }
-            _passBtn.interactable = myTurn;
+            _powerBtn.interactable = normalTurn && HasActionOfKind(V06ActionKind.Attack);
+            _swapBtn.interactable = normalTurn && HasActionOfKind(V06ActionKind.Swap);
+            if (_fuseBtn != null) { _fuseBtn.interactable = normalTurn && HasActionOfKind(V06ActionKind.Fuse); }
+            _passBtn.interactable = normalTurn;
             _coverBtn.interactable = resp && HasActionOfKind(V06ActionKind.Cover);
             _declineBtn.interactable = resp && HasActionOfKind(V06ActionKind.Decline);
+
+            // 响应窗口：把"该点哪里"直接写在提示行上，并把『放弃响应』点亮（唯一必能继续的出口）
+            if (resp)
+            {
+                bool canCover = HasActionOfKind(V06ActionKind.Cover);
+                _hintText.text = _respondActions.Count > 0
+                    ? ("对手攻击中：点『响应』牌" + (canCover ? " 或『掩护』" : "") + "，也可以『放弃响应』")
+                    : ("对手攻击中，你没有可用响应" + (canCover ? "（可『掩护』减 1）" : "") + "：点右下角『放弃响应』继续");
+                _hintText.color = new Color(1f, 0.86f, 0.45f);
+                _declineBtn.GetComponent<Image>().color = new Color(0.46f, 0.36f, 0.16f);
+            }
+            else
+            {
+                _hintText.color = UiKit.Selected;
+                _declineBtn.GetComponent<Image>().color = UiKit.ButtonNormal;
+            }
         }
 
         private static int CostOf(string cardId)
@@ -1316,15 +1609,64 @@ namespace Jieqiao.UI
             return sb.ToString();
         }
 
+        /// <summary>
+        /// 右侧行动按钮的悬停说明。文案一律按引擎实现写，改规则要同步改这里：
+        /// 融合占 1 次主行动且不花费用点；强攻／掩护各花 1 点费用点；换位免费且不占总行动；
+        /// 让过在"双方都让过或都用完主行动"时进入轮末；行动点最多结转 2 点。
+        /// </summary>
+        private void AttachActionTips()
+        {
+            if (_fuseBtn != null)
+            {
+                V06HoverTip.Attach(_fuseBtn.gameObject, "融合",
+                    "两只可融合的己方单位合成一体：占 1 次主行动、不花费用点；新形态额外 +1/+1，当轮即可攻击。");
+            }
+            if (_powerBtn != null)
+            {
+                V06HoverTip.Attach(_powerBtn.gameObject, "强攻",
+                    "本次主动攻击 +1。花 1 点费用点，每轮只能用一次；普通攻击本身不花费用。");
+            }
+            if (_swapBtn != null)
+            {
+                V06HoverTip.Attach(_swapBtn.gameObject, "换位",
+                    "免费移到另一排空格，或与另一排的己方单位对调；不占总行动，每轮一次。");
+            }
+            if (_passBtn != null)
+            {
+                V06HoverTip.Attach(_passBtn.gameObject, "让过",
+                    "结束本回合行动。双方都让过、或都用完主行动，即进入轮末结算；行动点最多结转 2 点。");
+            }
+            if (_coverBtn != null)
+            {
+                V06HoverTip.Attach(_coverBtn.gameObject, "掩护",
+                    "被指定攻击时花 1 点费用点，使这次伤害 −1；每轮一次，不能用来保护远征旗。");
+            }
+            if (_declineBtn != null)
+            {
+                V06HoverTip.Attach(_declineBtn.gameObject, "放弃响应",
+                    "不打出任何响应牌，本次攻击按原伤害直接结算。");
+            }
+        }
+
+        /// <summary>手牌副行：按类别写实话。装备/附印/战况/响应/晋阶/支援都已接入
+        /// （V06Effects2.Handles），只有天气/遭遇/事件是战役内容、当前模式用不了。</summary>
         private string HandSubLine(V06Card c)
         {
             switch (c.Category)
             {
                 case V06Category.Unit: return c.Atk + "/" + c.Hp + " " + c.Tags;
                 case V06Category.Tactic: return "战术";
-                case V06Category.Equipment: return "装备（本层未接入）";
-                case V06Category.Seal: return "附印（本层未接入）";
-                default: return c.Category + "（本层未接入）";
+                case V06Category.Equipment: return "装备";
+                case V06Category.Seal: return "附印";
+                case V06Category.Status: return "战况";
+                case V06Category.Response: return "响应";
+                case V06Category.Upgrade: return "晋阶";
+                case V06Category.Support: return "支援";
+                case V06Category.Token: return "衍生单位";
+                case V06Category.Weather: return "天气·未开放";
+                case V06Category.Encounter: return "遭遇·未开放";
+                case V06Category.Event: return "事件·未开放";
+                default: return c.Category.ToString();
             }
         }
 
@@ -1384,11 +1726,23 @@ namespace Jieqiao.UI
                 Refresh();
                 return;
             }
+            ClearSelection();              // 换选中必须互斥：手牌 / 预备 / 单位三选一
             _selHand = i;
-            _selUid = -1;
             _lastError = null;
             V06Card c = V06Catalog.ById(me.Hand[i]);
-            _hint = "已选中【" + (c != null ? c.Name : "?") + "】，点高亮的格位或目标执行。";
+            string name = c != null ? c.Name : "?";
+            if (c != null && c.Cost > me.ActionPoints)
+            {
+                _hint = "【" + name + "】还需要 " + (c.Cost - me.ActionPoints) + " 点费用（当前 " + me.ActionPoints + " 点）。";
+            }
+            else if (!_engine.MainActionsLeft(_playerCamp))
+            {
+                _hint = "本轮主行动已用完，只能让过。";
+            }
+            else
+            {
+                _hint = "已选中【" + name + "】，点高亮的格位或目标执行。";
+            }
             Refresh();
         }
 
@@ -1416,9 +1770,8 @@ namespace Jieqiao.UI
                 Refresh();
                 return;
             }
+            ClearSelection();              // 换选中必须互斥：手牌 / 预备 / 单位三选一
             _selReserve = i;
-            _selHand = -1;
-            _selUid = -1;
             _lastError = null;
             V06Card rc = V06Catalog.ById(id);
             _hint = "已选中预备【" + (rc != null ? rc.Name : "?") + "】，点高亮的单位执行。";
@@ -1475,7 +1828,28 @@ namespace Jieqiao.UI
                 // 点敌方单位 → 作为攻击目标
                 if (target == null) { _hint = "该格为空。"; Refresh(); return; }
                 V06Action act = FindAttack(target.Uid);
-                if (act == null) { _hint = "没有单位能攻击它（射程/护卫/已行动）。"; Refresh(); return; }
+                if (act == null)
+                {
+                    // 把"打不了"的原因说清楚,而不是一句"没有单位能攻击"
+                    string why = "没有单位能攻击它。";
+                    List<V06Unit> myUnits = new List<V06Unit>();
+                    for (int u = 0; u < V06Slot.Total; u++) { V06Unit mu = me.At(u); if (mu != null) { myUnits.Add(mu); } }
+                    bool anyReady = false, anyGuardBlocked = false;
+                    for (int u = 0; u < myUnits.Count; u++)
+                    {
+                        V06Unit mu = myUnits[u];
+                        if (mu.AttackedThisRound || (mu.DeployedThisRound && !mu.Has("突袭"))) { continue; }
+                        anyReady = true;
+                        List<V06Unit> legal = _engine.AttackTargets(mu);
+                        for (int k = 0; k < legal.Count; k++) { if (legal[k].Uid == target.Uid) { anyGuardBlocked = true; break; } }
+                    }
+                    if (!anyReady) { why = "本单位都已行动过（本轮每单位只能攻击一次）。"; }
+                    else if (anyGuardBlocked) { why = "被护卫挡住了：先攻击带护卫的单位。"; }
+                    else { why = "射程不够：后排单位需要远射或飞行才能攻击。"; }
+                    _hint = why;
+                    Refresh();
+                    return;
+                }
                 Execute(act);
                 return;
             }
@@ -1491,34 +1865,169 @@ namespace Jieqiao.UI
             }
             if (_selHand >= 0)
             {
-                // 战术指定己方单位
+                // ① S-V03 这类"需要落点"的战术：先选来源单位，再点对面空格
+                if (_pendingTacticUid >= 0)
+                {
+                    V06Action atSlot = FindPlayAtSlot(_selHand, _pendingTacticUid, slot);
+                    if (atSlot != null) { Execute(atSlot); return; }
+                }
+                // ② 战术指定己方单位
                 if (mine != null)
                 {
+                    // 先判断"两段式"（要落点）的牌：这类必须让玩家接着点格子，不能在这里直接执行
+                    if (HasPlayAtSlotForUnit(_selHand, mine.Uid))
+                    {
+                        _pendingTacticUid = mine.Uid;
+                        _hint = "已选【" + mine.Name + "】：点它对面一排的高亮空格作为落点。";
+                        Refresh();
+                        return;
+                    }
                     V06Action tac = FindAnyTargetedPlay(_selHand, mine.Uid);
                     if (tac != null) { Execute(tac); return; }
                 }
+                // ③ 部署
                 V06Action dep = FindDeploy(slot);
                 if (dep != null) { Execute(dep); return; }
-                _hint = mine != null ? "这张牌不能指定该单位（或行动点不足）。" : "单元格不能部署这张牌。";
+                if (_pendingTacticUid >= 0)
+                {
+                    _hint = "这个格子不能作为落点：要选它对面那一排的空格。";
+                }
+                else
+                {
+                    _hint = mine != null ? "这张牌不能指定该单位（或行动点不足）。" : "这个格子不能部署这张牌。";
+                }
                 Refresh();
                 return;
             }
-            // 换位：不需要开关。选中己方单位后点另一排的空格或单位即可
+            // ── 换位：必须显式确认，绝不因为"点了另一个单位"就自动换了位置 ──
             if (_selUid >= 0 && mine != null && mine.Uid != _selUid)
             {
                 V06Action swUnit = FindSwapUnit(_selUid, mine.Uid);
-                if (swUnit != null) { Execute(swUnit); return; }
+                if (swUnit != null)
+                {
+                    V06Unit selU = me.ByUid(_selUid);
+                    if (_swapMode)
+                    {
+                        AskSwapConfirm(selU, mine, swUnit, -1);
+                    }
+                    else
+                    {
+                        // 没进换位模式：只切换选中，不做换位（实机里"点到另一只就被换走"就是这么来的）
+                        _hint = "已选中【" + mine.Name + "】。要与【" + (selU != null ? selU.Name : "上一只") + "】换位，请先点『换位』按钮再点目标。";
+                        ClearSelection();
+                        _selUid = mine.Uid;
+                    }
+                    Refresh();
+                    return;
+                }
             }
             if (_selUid >= 0 && mine == null)
             {
                 V06Action swSlot = FindSwap(_selUid, slot);
-                if (swSlot != null) { Execute(swSlot); return; }
+                if (swSlot != null)
+                {
+                    V06Unit selU = me.ByUid(_selUid);
+                    if (_swapMode) { AskSwapConfirm(selU, null, swSlot, slot); }
+                    else
+                    {
+                        _hint = "要移到空位请先点『换位』按钮，再点目标格（会先确认）。";
+                    }
+                    Refresh();
+                    return;
+                }
             }
             if (mine == null) { _hint = "空格。先选一张手牌来部署。"; Refresh(); return; }
-            _selUid = (_selUid == mine.Uid) ? -1 : mine.Uid;
-            _selHand = -1;
+            bool sameUnit = (_selUid == mine.Uid);
+            ClearSelection();              // 点单位也要把之前的手牌/预备选择清掉
+            if (!sameUnit) { _selUid = mine.Uid; }
             _hint = _selUid >= 0 ? ("已选中【" + mine.Name + "】，点敌方高亮目标发起攻击。") : "已取消选择。";
             Refresh();
+        }
+
+        /// <summary>
+        /// 清空所有选中态。手牌、预备、单位三种选择是互斥的：
+        /// 之前只在各自入口清了一部分（点手牌不清预备），结果"先点预备再点手牌"会两个都留着，
+        /// 之后点己方格位时永远先走预备分支 → 手牌怎么点都部署不出去（实机复现过）。
+        /// 任何新的选中入口都必须先调它。
+        /// </summary>
+        private void ClearSelection()
+        {
+            _selHand = -1;
+            _selUid = -1;
+            _selReserve = -1;
+            _pendingTacticUid = -1;
+            _swapMode = false;
+        }
+
+        // ── 换位确认弹窗 ─────────────────────────────────────────
+        /// <summary>换位是"改局面"的操作，必须先让玩家确认再执行；不经确认的自动换位已去掉。</summary>
+        private void AskSwapConfirm(V06Unit a, V06Unit b, V06Action act, int slot)
+        {
+            CloseSwapConfirm();
+            if (a == null || act == null) { return; }
+            var layer = new GameObject("SwapConfirm", typeof(RectTransform), typeof(Image));
+            layer.transform.SetParent(_root, false);
+            var lrt = layer.GetComponent<RectTransform>();
+            lrt.anchorMin = Vector2.zero; lrt.anchorMax = Vector2.one;
+            lrt.offsetMin = Vector2.zero; lrt.offsetMax = Vector2.zero;
+            lrt.SetAsLastSibling();
+            var mask = layer.GetComponent<Image>();
+            mask.color = new Color(0f, 0f, 0f, 0.62f);
+            mask.raycastTarget = true;          // 挡住底下的点击，避免"确认框还在又点了别处"
+            Image panel = UiKit.Panel(layer.transform, "Panel", 450f, 320f, 700f, 250f, new Color(0.11f, 0.13f, 0.17f, 0.99f));
+            UiKit.Label(panel.transform, "T", 24f, 18f, 652f, 34f, "确认换位", 20, TextAnchor.MiddleLeft, UiKit.Selected);
+            string body = slot >= 0
+                ? "把【" + a.Name + "】移到对面那一排的空格（第 " + (slot % 3 + 1) + " 格）。"
+                : "把【" + a.Name + "】与【" + (b != null ? b.Name : "?") + "】互换前后排位置。";
+            UiKit.Label(panel.transform, "B", 24f, 58f, 652f, 76f,
+                body + "\n换位每轮 1 次：不消耗费用点，也不占主行动。", 16, TextAnchor.UpperLeft, UiKit.TextMain);
+            UiKit.Button(panel.transform, "Ok", 220f, 178f, 180f, 46f, "确定换位", UiKit.MyCamp, delegate
+            {
+                CloseSwapConfirm();
+                _swapMode = false;
+                Execute(act);
+            });
+            UiKit.Button(panel.transform, "Cancel", 420f, 178f, 180f, 46f, "取消", UiKit.ButtonNormal, delegate
+            {
+                CloseSwapConfirm();
+                _swapMode = false;
+                _hint = "已取消换位。";
+                Refresh();
+            });
+            _swapConfirmLayer = layer;
+        }
+
+        private void CloseSwapConfirm()
+        {
+            if (_swapConfirmLayer != null) { Destroy(_swapConfirmLayer); _swapConfirmLayer = null; }
+        }
+
+        /// <summary>某张手牌能不能"指定某个单位 + 某个空格"（S-V03 红雾换位这种两段式）。</summary>
+        private V06Action FindPlayAtSlot(int handIndex, int uid, int slot)
+        {
+            V06Player me = _engine.Players[_playerCamp];
+            if (handIndex < 0 || handIndex >= me.Hand.Count) { return null; }
+            string id = me.Hand[handIndex];
+            for (int i = 0; i < _actions.Count; i++)
+            {
+                V06Action a = _actions[i];
+                if (a.Kind == V06ActionKind.PlayCard && a.CardId == id && a.Uid == uid && a.TargetSlot == slot) { return a; }
+            }
+            return null;
+        }
+
+        /// <summary>这张牌是否存在"指定该单位 + 某空格"的用法（决定点单位后是否进入选落点状态）。</summary>
+        private bool HasPlayAtSlotForUnit(int handIndex, int uid)
+        {
+            V06Player me = _engine.Players[_playerCamp];
+            if (handIndex < 0 || handIndex >= me.Hand.Count) { return false; }
+            string id = me.Hand[handIndex];
+            for (int i = 0; i < _actions.Count; i++)
+            {
+                V06Action a = _actions[i];
+                if (a.Kind == V06ActionKind.PlayCard && a.CardId == id && a.Uid == uid && a.TargetSlot >= 0) { return true; }
+            }
+            return false;
         }
 
         private void OnEnemyFlagClicked()
@@ -1597,7 +2106,11 @@ namespace Jieqiao.UI
 
         private bool IsDeployTarget(int camp, int slot)
         {
-            if (camp != _playerCamp || _selHand < 0) { return false; }
+            if (camp != _playerCamp) { return false; }
+            // 两段式战术的落点（如红雾换位：先单位后空格）
+            if (_pendingTacticUid >= 0 && FindPlayAtSlot(_selHand, _pendingTacticUid, slot) != null) { return true; }
+            if (_swapMode && _selUid >= 0 && FindSwap(_selUid, slot) != null) { return true; }
+            if (_selHand < 0) { return false; }
             return FindDeploy(slot) != null;
         }
 
@@ -1652,7 +2165,9 @@ namespace Jieqiao.UI
             for (int i = 0; i < _actions.Count; i++)
             {
                 V06Action a = _actions[i];
-                if (a.Kind == V06ActionKind.PlayCard && a.CardId == cardId && a.Uid == uid) { return a; }
+                // 必须排除"还带落点"的方案：那种牌要玩家先选单位、再选格子两步走。
+                // 只按 uid 命中就执行，等于引擎替玩家挑落点（红雾换位把单位自己挪走就是这么来的）。
+                if (a.Kind == V06ActionKind.PlayCard && a.CardId == cardId && a.Uid == uid && a.TargetSlot < 0) { return a; }
             }
             return null;
         }
@@ -1794,6 +2309,7 @@ namespace Jieqiao.UI
                 if (t0 != null) { guardCamp = t0.Camp; guardSlot = t0.Slot; guardHp = t0.CurHp; }
             }
             if (fxOn) { _fx.Capture(_engine); }
+            int logBefore = _engine.Log.Count;
             bool ok = _engine.Apply(a, out err);
             if (!ok)
             {
@@ -1801,6 +2317,20 @@ namespace Jieqiao.UI
                 _hint = _lastError;
                 Refresh();
                 return;
+            }
+            // ── 汲取反馈：引擎只在战斗日志里写一行，玩家几乎注意不到 ──
+            // 触发时把结果顶到提示行；打旗时明确说明"不触发"，免得以为效果坏了。
+            bool drainFired = false;
+            for (int li = logBefore; li < _engine.Log.Count; li++)
+            {
+                if (_engine.Log[li] != null && _engine.Log[li].Contains("汲取")) { _hint = _engine.Log[li]; drainFired = true; break; }
+            }
+            if (!drainFired && a != null && a.Kind == V06ActionKind.Attack && a.ToFlag && _engine != null)
+            {
+                V06Unit flagAtk = null;
+                for (int c2 = 0; c2 < 2 && flagAtk == null; c2++) { flagAtk = _engine.Players[c2].ByUid(a.Uid); }
+                // 响应窗口期间提示行归"对手正在响应…"，所以先记一笔，等结算完再说明
+                if (flagAtk != null && flagAtk.Has("汲取")) { _drainFlagNote = true; }
             }
             // ── 第 3 批动画：出手前扑 / 格挡涟漪 / 阵亡消散 / 部署法阵 / 融合连线 ──
             if (atkIdx >= 0)
@@ -1827,14 +2357,26 @@ namespace Jieqiao.UI
             if (a != null && a.Kind == V06ActionKind.Fuse) { PlayScreenOnce("anim_fuse_link", 0.9f); }
             if (fxOn)
             {
-                _fx.Diff(_engine, a);
-                if (guardCamp >= 0)
+                // 特效永远不能打断动作流程：这里出任何异常都只警告一次，规则照常结算
+                try
                 {
-                    V06Unit t1 = _engine.Players[guardCamp].ByUid(a.TargetUid);
-                    if (t1 != null && t1.CurHp == guardHp)
+                    _fx.Diff(_engine, a);
+                    if (guardCamp >= 0)
                     {
-                        _fx.PlayGuard(guardCamp, guardSlot);
-                        PlaySlotBurst(Wig(guardCamp) * 6 + guardSlot, "anim_guard_ripple");
+                        V06Unit t1 = _engine.Players[guardCamp].ByUid(a.TargetUid);
+                        if (t1 != null && t1.CurHp == guardHp)
+                        {
+                            _fx.PlayGuard(guardCamp, guardSlot);
+                            PlaySlotBurst(Wig(guardCamp) * 6 + guardSlot, "anim_guard_ripple");
+                        }
+                    }
+                }
+                catch (System.Exception fxEx)
+                {
+                    if (!_fxErrorLogged)
+                    {
+                        _fxErrorLogged = true;
+                        Debug.LogWarning("[V06特效] 播放异常（已忽略，规则不受影响）：" + fxEx.Message);
                     }
                 }
             }
@@ -1853,6 +2395,12 @@ namespace Jieqiao.UI
         {
             if (_resultPanel == null) { return; }
             _resultPanel.SetActive(true);
+            // 下面全是"演一次"的东西（全屏特效、音效、弹出补间、写存档）：
+            // Update 每帧都会进来，所以必须先挡住重复执行。
+            if (_resultShown) { return; }
+            _resultShown = true;
+            Debug.Log("[V06结算] 演出一次（每局只应出现一次）：胜方=" + _engine.Winner
+                + " 原因=" + _engine.FinishReason + " 轮=" + _engine.Round);
             string who;
             if (_engine.Winner == _playerCamp) { who = "你赢了"; }
             else if (_engine.Winner == -2) { who = "平局"; }
@@ -1878,9 +2426,15 @@ namespace Jieqiao.UI
                 _banner.gameObject.SetActive(true);
                 V06UiV07.Pop(_banner.rectTransform, 0.2f);
             }
-            V06Audio.Play(_engine.Winner == _playerCamp ? "sfx_win" : "sfx_lose");
-            // 第 3 批：胜→星屑，负/平→四周暗角
+            V06Audio.Play(_engine.Winner == _playerCamp ? "R41" : "R42");
+            // 结算全屏特效：胜→星屑／平→柔光／负→暗角。
+            // 平局以前借用失败暗角（看着像输了），现在单独给 anim_draw_veil，没素材才退回暗角。
             if (_engine.Winner == _playerCamp) { PlayScreenOnce("anim_victory_stars", 2.2f); }
+            else if (_engine.Winner == -2)
+            {
+                if (V06UiV07.HasAnim("anim_draw_veil")) { PlayScreenOnce("anim_draw_veil", 2.2f); }
+                else { PlayScreenOnce("anim_defeat_vignette", 2.2f); }
+            }
             else { PlayScreenOnce("anim_defeat_vignette", 2.6f); }
             // V0.7：结算写进存档（每局只记一次）
             if (!_resultRecorded && !netMode)
@@ -1920,10 +2474,13 @@ namespace Jieqiao.UI
             _myDeckName = deckA == null ? "" : deckA.Name;
             _foeDeckName = deckB == null ? "" : deckB.Name;
             _resultRecorded = false;
+            _resultShown = false;
+            CloseSwapConfirm();
             _selHand = -1; _selUid = -1; _selReserve = -1;
             _powerStrike = false; _swapMode = false;
             _aiTimer = 0f;
             if (_resultPanel != null) { _resultPanel.SetActive(false); }
+            if (_banner != null) { _banner.gameObject.SetActive(false); }
             V06Ai.Seed(seed + 17);
             Refresh();
             // 大厅/组卡/联机都走这条开局路径，所以对战音乐必须在这里起（之前只挂在 NewGame 上，正式玩家永远听不到）
@@ -1962,6 +2519,32 @@ namespace Jieqiao.UI
             SetVisualVisible(false);
             if (V06ShellUI.Instance != null) { V06ShellUI.Instance.Show(); }
         }
+
+        /// <summary>结算面板是否显示（自动化巡检用）。</summary>
+        public bool ResultPanelVisible { get { return _resultPanel != null && _resultPanel.activeSelf; } }
+
+        /// <summary>当前是否在等我方做出响应（响应牌／掩护／放弃）。自动化巡检据此点"放弃响应"，
+        /// 否则对手一攻击就卡在响应窗口里，整局永远打不完。</summary>
+        public bool IsResponding
+        {
+            get { return _engine != null && !_engine.Finished && _engine.PendingAttack != null && _engine.Active == _playerCamp; }
+        }
+
+        /// <summary>当前存活的全屏一次性特效层数量（自动化巡检用）：
+        /// 结算演出若每帧重放，这里会堆到上百层，正是"屏幕发白卡死"的根因，所以要能读出来。</summary>
+        public int ScreenFxCount
+        {
+            get
+            {
+                if (_root == null) { return 0; }
+                int n = 0;
+                for (int i = 0; i < _root.childCount; i++)
+                {
+                    if (_root.GetChild(i).gameObject.name.StartsWith("ScreenFx_")) { n++; }
+                }
+                return n;
+            }
+        }
         /// <summary>V0.7：已触发的特效次数（自动化测试用来确认手感层真的在跑）。</summary>
         public int FxCount { get { return _fx == null ? 0 : _fx.FxCount; } }
         /// <summary>V0.7：特效组件的可用状态与素材加载情况。</summary>
@@ -1978,6 +2561,27 @@ namespace Jieqiao.UI
         public bool InfoPanelBuilt { get { return _infoPanel != null; } }
         /// <summary>测试用：外部改过引擎状态（如注入素材）后强制刷一次界面。</summary>
         public void ForceRefresh() { Refresh(); }
+
+        /// <summary>测试用：换位确认框是否正开着（自动化要确认"点另一只不会直接换位"）。</summary>
+        public bool SwapConfirmVisible { get { return _swapConfirmLayer != null; } }
+
+        /// <summary>测试用：当前是否处于"已选来源单位、等玩家点落点"的两段式战术状态（S-V03 等）。</summary>
+        public bool PendingTactic { get { return _pendingTacticUid >= 0; } }
+        public int PendingTacticUid { get { return _pendingTacticUid; } }
+
+        /// <summary>测试用：点换位确认框里的"确定/取消"。</summary>
+        public bool ClickSwapConfirm(bool ok)
+        {
+            if (_swapConfirmLayer == null) { return false; }
+            Transform panel = _swapConfirmLayer.transform.Find("Panel");
+            if (panel == null) { return false; }
+            Transform btn = panel.Find(ok ? "Ok" : "Cancel");
+            if (btn == null) { return false; }
+            Button b = btn.GetComponent<Button>();
+            if (b == null) { return false; }
+            b.onClick.Invoke();
+            return true;
+        }
         public int PlayerCamp { get { return _playerCamp; } }
         public bool IsPlayerTurn { get { return _engine != null && _engine.Active == _playerCamp && !_engine.Finished; } }
 
@@ -2010,6 +2614,9 @@ namespace Jieqiao.UI
     public bool ClickAction(V06Action a)
         {
             if (a == null || _engine == null) { return false; }
+            // 自动化点击必须从"干净选中态"开始：手牌/预备/单位是开关式选中，
+            // 上一次点击留下的选中会让这一次变成"再点一次"（表现为行动被吞、测试卡住）。
+            ClearSelection();
             if (a.Kind == V06ActionKind.Pass) { DoPass(); return true; }
             if (a.Kind == V06ActionKind.Cover) { DoCover(); return true; }
             if (a.Kind == V06ActionKind.Decline) { DoDecline(); return true; }
@@ -2029,13 +2636,14 @@ namespace Jieqiao.UI
                 if (hi < 0) { return false; }
                 OnHandClicked(hi);
                 if (a.Uid < 0) { OnHandClicked(hi); return true; }
-                // 目标是我方还是敌方
-                if (_engine.Players[_playerCamp].ByUid(a.Uid) != null)
+                // 两段式战术（S-V03 红雾换位这类）：点来源单位 → 再点玩家自己选的落点
+                if (a.TargetSlot >= 0)
                 {
-                    V06Unit t = _engine.Players[_playerCamp].ByUid(a.Uid);
-                    _hint = "（战术目标）";
-                    string err;
-                    return _engine.Apply(a, out err);
+                    V06Unit src = me.ByUid(a.Uid);
+                    if (src == null) { return false; }
+                    OnSlotClicked(_playerCamp, src.Slot);
+                    OnSlotClicked(_playerCamp, a.TargetSlot);
+                    return true;
                 }
                 string err2;
                 return _engine.Apply(a, out err2);
@@ -2077,6 +2685,8 @@ namespace Jieqiao.UI
                 {
                     OnSlotClicked(_playerCamp, a.TargetSlot);
                 }
+                // 换位现在必须玩家确认；自动化走"点确定"这条真实路径
+                if (_swapConfirmLayer != null) { ClickSwapConfirm(true); }
                 return true;
             }
             return false;

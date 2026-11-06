@@ -77,13 +77,13 @@ namespace Jieqiao
             new V06Card { Exp = true, Id = "G01", Name = "风纪剑姬", Category = V06Category.Unit, Cost = 3, Atk = 3, Hp = 4, Tags = "人类·少女", Text = "突袭；入场：对一个敌前排单位造成1点效果伤害。", Keywords = new string[] { "突袭" } },
             new V06Card { Exp = true, Id = "G02", Name = "夜巡枪手", Category = V06Category.Unit, Cost = 3, Atk = 2, Hp = 4, Tags = "血族·少女", Text = "远射；入场：对一个敌单位造成1点效果伤害。", Keywords = new string[] { "远射" } },
             new V06Card { Exp = true, Id = "G03", Name = "神社巫女", Category = V06Category.Unit, Cost = 2, Atk = 1, Hp = 4, Tags = "精灵·少女", Text = "入场：可治疗另一个己方单位2。", Keywords = new string[] { "少女" } },
-            new V06Card { Exp = true, Id = "G04", Name = "偶像应援", Category = V06Category.Unit, Cost = 2, Atk = 1, Hp = 3, Tags = "人类·少女", Text = "应援：己方其他单位攻击+1（不叠加）。入场：一个己方单位本轮攻击+1。", Keywords = new string[] { "应援" } },
+            new V06Card { Exp = true, Id = "G04", Name = "偶像应援", Category = V06Category.Unit, Cost = 2, Atk = 1, Hp = 3, Tags = "人类·少女", Text = "应援：己方其他单位主动攻击时攻击+1（不叠加）。入场：一个己方单位本轮攻击+1。", Keywords = new string[] { "应援" } },
             new V06Card { Exp = true, Id = "G05", Name = "街头格斗少女", Category = V06Category.Unit, Cost = 3, Atk = 4, Hp = 3, Tags = "人类·少女", Text = "协攻。", Keywords = new string[] { "协攻" } },
             new V06Card { Exp = true, Id = "G06", Name = "忍装少女", Category = V06Category.Unit, Cost = 2, Atk = 2, Hp = 3, Tags = "精灵·少女", Text = "潜行。", Keywords = new string[] { "潜行" } },
-            new V06Card { Exp = true, Id = "G07", Name = "工坊机械师", Category = V06Category.Unit, Cost = 3, Atk = 2, Hp = 4, Tags = "矮人·少女", Text = "维修；入场：若有空格，生成T08。", Keywords = new string[] { "维修" } },
+            new V06Card { Exp = true, Id = "G07", Name = "工坊机械师", Category = V06Category.Unit, Cost = 3, Atk = 2, Hp = 4, Tags = "矮人·少女", Text = "维修；入场：若有空格，生成维修微机。", Keywords = new string[] { "维修" } },
             new V06Card { Exp = true, Id = "G08", Name = "观星术士", Category = V06Category.Unit, Cost = 3, Atk = 1, Hp = 4, Tags = "精灵·少女", Text = "远射；入场：看己方牌库顶2张，可交换顺序；不抽牌。", Keywords = new string[] { "远射" } },
             new V06Card { Exp = true, Id = "G09", Name = "剑道少女", Category = V06Category.Unit, Cost = 4, Atk = 5, Hp = 5, Tags = "人类·少女", Text = "夜行。", Keywords = new string[] { "夜行" } },
-            new V06Card { Exp = true, Id = "G10", Name = "祭典舞姬", Category = V06Category.Unit, Cost = 3, Atk = 2, Hp = 4, Tags = "精灵·少女", Text = "应援：己方其他单位攻击+1（不叠加）。入场：一个己方单位本轮攻击+1。", Keywords = new string[] { "应援" } },
+            new V06Card { Exp = true, Id = "G10", Name = "祭典舞姬", Category = V06Category.Unit, Cost = 3, Atk = 2, Hp = 4, Tags = "精灵·少女", Text = "应援：己方其他单位主动攻击时攻击+1（不叠加）。入场：一个己方单位本轮攻击+1。", Keywords = new string[] { "应援" } },
             new V06Card { Exp = true, Id = "G11", Name = "摔角少女", Category = V06Category.Unit, Cost = 4, Atk = 4, Hp = 6, Tags = "兽人·少女", Text = "护卫；入场：可治疗另一个己方单位2。", Keywords = new string[] { "护卫" } },
             new V06Card { Exp = true, Id = "G12", Name = "弓道少女", Category = V06Category.Unit, Cost = 3, Atk = 3, Hp = 3, Tags = "人类·少女", Text = "远射。", Keywords = new string[] { "远射" } },
             new V06Card { Exp = true, Id = "G13", Name = "水泳部少女", Category = V06Category.Unit, Cost = 2, Atk = 2, Hp = 2, Tags = "人类·少女", Text = "突袭。", Keywords = new string[] { "突袭" } },
@@ -234,7 +234,8 @@ namespace Jieqiao
             return null;
         }
 
-        /// <summary>某张卡参与的融合组合（系名形式，供界面提示用）。</summary>
+        /// <summary>某张卡参与的融合组合（系名 + 结果卡名，供界面提示用）。
+        /// 结果这里给的是**卡名**不是编号：编号只对开发者有意义，玩家看"猎鹰系→B37"是看不懂的。</summary>
         public static List<string> FusionPartners(string cardId)
         {
             List<string> r = new List<string>();
@@ -247,8 +248,9 @@ namespace Jieqiao
                 else if (FusionLines[i, 1] == line) { other = FusionLines[i, 0]; }
                 else { continue; }
                 int rid = FusionLines[i, 2];
-                string res = "B" + (rid < 10 ? "0" + rid : "" + rid);
-                r.Add(LineName(other) + "→" + res);
+                string resId = "B" + (rid < 10 ? "0" + rid : "" + rid);
+                V06Card rc = V06Catalog.ById(resId);
+                r.Add(LineName(other) + "→" + (rc != null ? rc.Name : resId));
             }
             return r;
         }

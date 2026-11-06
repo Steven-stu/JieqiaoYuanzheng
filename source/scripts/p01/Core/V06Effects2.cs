@@ -323,6 +323,7 @@ namespace Jieqiao
                 default: error = "未实现：" + c.Id; return false;
             }
             e.CleanupDeaths();
+            e.AfterNonUnitAction();
             return true;
         }
 
@@ -340,25 +341,86 @@ namespace Jieqiao
             return cat.ToString();
         }
 
+        /// <summary>给单位加关键词并记进来源台账。本体（或其它来源）已有的不记，
+        /// 于是撤销时也不会把本体那条删掉。</summary>
+        private static void GrantKw(V06Unit u, string kw, List<string> ledger)
+        {
+            if (u == null || string.IsNullOrEmpty(kw) || ledger == null) { return; }
+            if (u.Has(kw)) { return; }
+            u.AddKw(kw);
+            ledger.Add(kw);
+        }
+
+        /// <summary>撤关键词：只撤本层台账里记过的，本体自带的与别人给的一律保留。</summary>
+        private static void RevokeKw(V06Unit u, string kw, List<string> ledger)
+        {
+            if (u == null || string.IsNullOrEmpty(kw) || ledger == null) { return; }
+            if (!ledger.Remove(kw)) { return; }
+            u.RemoveKw(kw);
+        }
+
+        /// <summary>撤销一件装备带来的加成(换新装备/被移除时调用)。</summary>
+        private static void RevokeEquipment(V06Unit u, string equipId)
+        {
+            if (u == null || string.IsNullOrEmpty(equipId)) { return; }
+            switch (equipId)
+            {
+                case "Q01": u.AtkPerm -= 1; break;
+                case "Q02": u.HpPerm -= 2; if (u.CurHp > u.MaxHp) { u.Damage = u.MaxHp - u.CurHp; } break;
+                case "Q03": RevokeKw(u, "远射", u.KwFromEquip); break;
+                case "Q04": u.AtkPerm -= 2; break;
+                case "Q05": RevokeKw(u, "林纹披风", u.KwFromEquip); break;
+                case "Q06": RevokeKw(u, "坚壁", u.KwFromEquip); break;
+                case "Q07": RevokeKw(u, "银纹护符", u.KwFromEquip); break;
+                case "Q08": u.AtkPerm -= 1; RevokeKw(u, "汲取", u.KwFromEquip); break;
+                case "Q09": RevokeKw(u, "协攻", u.KwFromEquip); break;
+                case "Q10": u.HpPerm -= 3; if (u.CurHp > u.MaxHp) { u.Damage = u.MaxHp - u.CurHp; } break;
+                case "Q11": RevokeKw(u, "飞行", u.KwFromEquip); break;
+                case "Q12": RevokeKw(u, "驯兽铃", u.KwFromEquip); u.WatcherBellUsed = 0; break;
+            }
+        }
+
+        /// <summary>撤销一枚附印带来的加成。A03 穿透属于"本局永久",按文档例外保留。</summary>
+        private static void RevokeSeal(V06Unit u, string sealId)
+        {
+            if (u == null || string.IsNullOrEmpty(sealId)) { return; }
+            switch (sealId)
+            {
+                case "A01": RevokeKw(u, "护卫", u.KwFromSeal); break;
+                case "A02": RevokeKw(u, "再生", u.KwFromSeal); break;
+                case "A03": break;                        // 本局永久,不撤
+                case "A04": RevokeKw(u, "余烬", u.KwFromSeal); break;
+                case "A05": RevokeKw(u, "夜行", u.KwFromSeal); break;
+                case "A06": u.AtkPerm -= 1; break;
+                case "A07": u.HpPerm -= 2; if (u.CurHp > u.MaxHp) { u.Damage = u.MaxHp - u.CurHp; } break;
+                case "A08": RevokeKw(u, "机核", u.KwFromSeal); break;
+            }
+        }
+
         private static void ApplyEquipment(V06Engine e, V06Player p, V06Unit u, V06Card c)
         {
             if (u == null) { return; }
-            if (!string.IsNullOrEmpty(u.EquipId)) { p.Discard.Add(u.EquipId); e.Log.Add("替换装备：" + u.EquipId + " 弃置"); }
+            if (!string.IsNullOrEmpty(u.EquipId))
+            {
+                RevokeEquipment(u, u.EquipId);            // 换新装备先撤旧加成,否则加成会累加
+                p.Discard.Add(u.EquipId);
+                e.Log.Add("替换装备：" + u.EquipId + " 弃置(加成已撤销)");
+            }
             u.EquipId = c.Id;
             switch (c.Id)
             {
                 case "Q01": u.AtkPerm += 1; break;
                 case "Q02": u.HpPerm += 2; break;
-                case "Q03": u.AddKw("远射"); break;
+                case "Q03": GrantKw(u, "远射", u.KwFromEquip); break;
                 case "Q04": u.AtkPerm += 2; break;
-                case "Q05": u.ReduceThisRound += 0; u.HpPerm += 0; u.AddKw("林纹披风"); break;
-                case "Q06": u.AddKw("坚壁"); break;
-                case "Q07": u.AddKw("银纹护符"); break;
-                case "Q08": u.AtkPerm += 1; u.AddKw("汲取"); break;
-                case "Q09": u.AddKw("协攻"); break;
+                case "Q05": u.ReduceThisRound += 0; u.HpPerm += 0; GrantKw(u, "林纹披风", u.KwFromEquip); break;
+                case "Q06": GrantKw(u, "坚壁", u.KwFromEquip); break;
+                case "Q07": GrantKw(u, "银纹护符", u.KwFromEquip); break;
+                case "Q08": u.AtkPerm += 1; GrantKw(u, "汲取", u.KwFromEquip); break;
+                case "Q09": GrantKw(u, "协攻", u.KwFromEquip); break;
                 case "Q10": u.HpPerm += 3; break;
-                case "Q11": u.AddKw("飞行"); break;
-                case "Q12": u.AddKw("驯兽铃"); break;
+                case "Q11": GrantKw(u, "飞行", u.KwFromEquip); break;
+                case "Q12": GrantKw(u, "驯兽铃", u.KwFromEquip); break;
             }
             e.Log.Add(u.Name + " 装备 " + c.Name);
         }
@@ -366,18 +428,23 @@ namespace Jieqiao
         private static void ApplySeal(V06Engine e, V06Player p, V06Unit u, V06Card c)
         {
             if (u == null) { return; }
-            if (!string.IsNullOrEmpty(u.SealId)) { p.Discard.Add(u.SealId); e.Log.Add("替换附印：" + u.SealId + " 弃置"); }
+            if (!string.IsNullOrEmpty(u.SealId))
+            {
+                RevokeSeal(u, u.SealId);                  // 换附印先撤旧加成(A03 穿透例外保留)
+                p.Discard.Add(u.SealId);
+                e.Log.Add("替换附印：" + u.SealId + " 弃置(加成已撤销)");
+            }
             u.SealId = c.Id;
             switch (c.Id)
             {
-                case "A01": u.AddKw("护卫"); break;
-                case "A02": u.AddKw("再生"); break;
-                case "A03": u.AddKw("穿透"); break;
-                case "A04": u.AddKw("余烬"); break;
-                case "A05": u.AddKw("夜行"); break;
+                case "A01": GrantKw(u, "护卫", u.KwFromSeal); break;
+                case "A02": GrantKw(u, "再生", u.KwFromSeal); break;
+                case "A03": GrantKw(u, "穿透", u.KwFromSeal); break;
+                case "A04": GrantKw(u, "余烬", u.KwFromSeal); break;
+                case "A05": GrantKw(u, "夜行", u.KwFromSeal); break;
                 case "A06": u.AtkPerm += 1; break;
                 case "A07": u.HpPerm += 2; if (u.Damage > 0) { u.Damage -= 1; } break;
-                case "A08": u.AddKw("机核"); break;
+                case "A08": GrantKw(u, "机核", u.KwFromSeal); break;
             }
             e.Log.Add(u.Name + " 附印 " + c.Name);
         }
@@ -504,8 +571,9 @@ namespace Jieqiao
                     }
                     break;
                 case "P12":
-                    p.FrontReduceThisRound += 1;
-                    e.Log.Add("共同战线：本轮前排减伤 1");
+                    // 与坚壁同源:ModifyAttackDamage 中"坚壁类减伤只算一次",这里不叠加数值
+                    if (p.FrontReduceThisRound < 1) { p.FrontReduceThisRound = 1; }
+                    e.Log.Add("共同战线：本轮前排获得坚壁(与已有坚壁不叠加)");
                     break;
             }
         }

@@ -57,7 +57,8 @@ public static class V06Checks
         int n = V06Catalog.All.Count;
         int exp = 0;
         for (int i = 0; i < V06Catalog.All.Count; i++) { if (V06Catalog.All[i].Exp) { exp++; } }
-        Check("卡池总数 252 条（基础 192 + V0.7 扩展 60）", n == 252 && exp == 60,
+        // 基础 192 + V0.7 扩展 140（B 44 + G 16 + N 80）
+        Check("卡池总数 332 条（基础 192 + V0.7 扩展 140）", n == 332 && exp == 140,
             "实际 " + n + " 条（其中扩展 " + exp + " 条）");
     }
 
@@ -316,9 +317,9 @@ public static class V06Checks
     }
 
     /// <summary>
-    /// 卡面素材覆盖：基础 192 张**每一张**都要取到自己编号的专属图；
-    /// V0.7 扩展的 60 张暂时用「文字版占位图」（精灵名前缀 "ph:"），只要不是空图就算通过。
-    /// 2026-11-04 补图后标准提高到全量专属（此前只查单位/衍生物，且允许派系兜底）。
+    /// 卡面素材覆盖：全卡池 **332 张每一张**都要取到自己编号的专属图（不允许占位、兜底、缺图）。
+    /// 2026-11-04 补图后标准提高到全量专属；2026-11-06 第三批 N61–N140 共 80 张卡面到位后，
+    /// 期望值从 252 提到 332——占位数不再是"可接受"，因为新卡面已经全部导入。
     /// </summary>
     private static void UnitArtCoverage()
     {
@@ -335,27 +336,37 @@ public static class V06Checks
             fallback++;
             fb.Append(c.Id + "(" + sp.name.Split('#')[0] + ") ");
         }
-        Check("卡面素材覆盖：基础 192 张全专属 + 扩展 60 张文字占位（实测 " + own + " 专属 / " + ph + " 占位 / "
+        Check("卡面素材覆盖：332 张全专属（实测 " + own + " 专属 / " + ph + " 占位 / "
               + fallback + " 兜底 / " + none + " 缺图）",
-            none == 0 && own == 192 && fallback == 0 && ph == 60,
+            none == 0 && own == 332 && fallback == 0 && ph == 0,
             "缺图：" + (missing.Length == 0 ? "无" : missing.ToString().Trim())
             + "；兜底：" + (fb.Length == 0 ? "无" : fb.ToString().Trim()));
     }
     private static void IdNamespaceNote()
     {
         // 文档 ID 空间有两处冲突，工程内按下列约定消歧：
-        //   ① 伙伴编号 P01–P10（02 章）与支援牌 P01–P12（03 §4.8）撞号 → 卡池保留 P，伙伴改用 N01–N10；
+        //   ① 伙伴编号 P01–P10（02 章）与支援牌 P01–P12（03 §4.8）撞号 → 卡池保留 P，伙伴改用别的前缀；
         //   ② 遭遇牌已占用 C01–C12，不能再用 C 做伙伴前缀。
-        int sup = 0, enc = 0, nUse = 0;
+        //   ③ 2026-11-06 第三批卡池启用 N 前缀（N61–N140 共 80 条），所以 N 不再是"预留空号"，
+        //      这里改为核对"N 只被这一批占用、没有和第二批 B/G 混用，支援/遭遇计数也没被动过"。
+        int sup = 0, enc = 0, nUse = 0, nBad = 0;
         for (int i = 0; i < V06Catalog.All.Count; i++)
         {
             V06Card c = V06Catalog.All[i];
             if (c.Category == V06Category.Support) { sup++; }
             if (c.Category == V06Category.Encounter) { enc++; }
-            if (c.Id.Length > 0 && c.Id[0] == 'N') { nUse++; }
+            if (c.Id.Length > 0 && c.Id[0] == 'N')
+            {
+                nUse++;
+                // N 系列只放单位，且编号必须落在 N61–N140 区间
+                int num;
+                if (c.Category != V06Category.Unit
+                    || !int.TryParse(c.Id.Substring(1), out num) || num < 61 || num > 140) { nBad++; }
+            }
         }
-        Check("伙伴命名空间 N01–N10 空闲（P 归支援、C 归遭遇）", sup == 12 && enc == 12 && nUse == 0,
-            "支援 " + sup + " 张（P）、遭遇 " + enc + " 张（C）、N 已占 " + nUse + " 条");
+        Check("ID 命名空间无冲突（P 支援 / C 遭遇 / N61–N140 单位）",
+            sup == 12 && enc == 12 && nUse == 80 && nBad == 0,
+            "支援 " + sup + " 张（P）、遭遇 " + enc + " 张（C）、N 系列 " + nUse + " 条（异常 " + nBad + " 条）");
     }
 }
 #endif

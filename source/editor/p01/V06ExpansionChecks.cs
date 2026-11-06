@@ -202,19 +202,22 @@ public static class V06ExpansionChecks
 
     private static void ArtPlaceholder()
     {
-        int ph = 0, own = 0, none = 0;
+        int ph = 0, own = 0, none = 0, expCount = 0;
         var miss = new StringBuilder();
         for (int i = 0; i < V06Catalog.All.Count; i++)
         {
             V06Card c = V06Catalog.All[i];
             if (!c.Exp) { continue; }
+            expCount++;
             UnityEngine.Sprite sp = Jieqiao.UI.V06Art.Portrait(c.Id, c.Cost);
             if (sp == null) { none++; miss.Append(c.Id + " "); continue; }
             if (sp.name.StartsWith("ph:")) { ph++; }
             else if (sp.name == c.Id) { own++; }
         }
-        Check("扩展卡都有可显示的卡面（" + ph + " 张文字占位 / " + own + " 张专属 / " + none + " 张缺图）",
-            none == 0 && ph + own == 60,
+        // 2026-11-06：第三批 N61–N140 的 80 张卡面已到位，扩展卡（B/G/N 共 140）应当全是专属图，
+        // 占位数必须为 0——留 ph 计数是为了万一以后又交来"无图卡"能立刻看出来。
+        Check("扩展卡都有专属卡面（" + expCount + " 张：专属 " + own + " / 文字占位 " + ph + " / 缺图 " + none + "）",
+            none == 0 && ph == 0 && own == 140,
             "缺图：" + (miss.Length == 0 ? "无" : miss.ToString().Trim()));
     }
 

@@ -53,6 +53,7 @@ namespace Jieqiao.UI
         {
             get
             {
+                if (V06Save.DevMode) { return true; }
                 if (V06Save.Data == null) { return false; }
                 return V06Save.Data.dailyShopDay != V06Save.TodayKey();
             }
@@ -62,6 +63,7 @@ namespace Jieqiao.UI
         public static bool CanBuy(Def d, out string why)
         {
             why = "";
+            if (V06Save.DevMode) { return true; }
             if (d == null || V06Save.Data == null) { why = "存档未就绪"; return false; }
             if (d.Id == "daily" && !DailyAvailable) { why = "今天的特惠已经买过了"; return false; }
             V06SaveData s = V06Save.Data;
@@ -79,9 +81,12 @@ namespace Jieqiao.UI
             string why;
             if (!CanBuy(d, out why)) { err = why; return null; }
             V06SaveData s = V06Save.Data;
-            if (d.Pay == Currency.Coins) { s.coins -= d.Price; }
-            else if (d.Pay == Currency.Gems) { s.gems -= d.Price; }
-            else { s.packs -= d.Price; }
+            if (!V06Save.DevMode)
+            {
+                if (d.Pay == Currency.Coins) { s.coins -= d.Price; }
+                else if (d.Pay == Currency.Gems) { s.gems -= d.Price; }
+                else { s.packs -= d.Price; }
+            }
             s.shopBuys++;
 
             List<string> pool = Pool("");
@@ -126,8 +131,8 @@ namespace Jieqiao.UI
             err = "";
             cardIds = new List<string>();
             if (V06Save.Data == null) { err = "存档未就绪"; return null; }
-            if (V06Save.Data.packs <= 0) { err = "没有卡包了"; return null; }
-            V06Save.Data.packs--;
+            if (!V06Save.DevMode && V06Save.Data.packs <= 0) { err = "没有卡包了"; return null; }
+            if (!V06Save.DevMode) { V06Save.Data.packs--; }
             List<string> pool = Pool("");
             List<string> names = new List<string>();
             for (int i = 0; i < 5; i++)

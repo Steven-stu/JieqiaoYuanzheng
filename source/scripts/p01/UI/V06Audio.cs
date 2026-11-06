@@ -169,12 +169,44 @@ namespace Jieqiao.UI
             }
         }
 
-        /// <summary>播一个音效（不带路径，例如 "sfx_click"）。</summary>
+        /// <summary>槽位名(R01..R42)或旧音效名 → 资源文件名。</summary>
+        public static string ResolveSfx(string name)
+        {
+            if (string.IsNullOrEmpty(name)) { return null; }
+            // R01 .. R42 / R27a / R27b 直接对应 sfx_r01.wav 等
+            if ((name[0] == 'R' || name[0] == 'r') && name.Length >= 2 && char.IsDigit(name[1]))
+            {
+                return "sfx_" + name.ToLowerInvariant();
+            }
+            switch (name)
+            {
+                case "sfx_click": return "sfx_r01";
+                case "sfx_back": return "sfx_r05";
+                case "sfx_coin": return "sfx_r16";
+                case "sfx_confirm": return "sfx_r11";
+                case "sfx_hit": return "sfx_r25";
+                case "sfx_hit_heavy": return "sfx_r30";
+                case "sfx_shoot": return "sfx_r26";
+                case "sfx_laser": return "sfx_r27a";
+                case "sfx_flag": return "sfx_r37";
+                case "sfx_guard": return "sfx_r28";
+                case "sfx_heal": return "sfx_r32";
+                case "sfx_death": return "sfx_r33";
+                case "sfx_evolve": return "sfx_r34";
+                case "sfx_fuse": return "sfx_r35";
+                case "sfx_explosion": return "sfx_r36";
+                case "sfx_win": return "sfx_r41";
+                case "sfx_lose": return "sfx_r42";
+            }
+            return name;
+        }
+
+        /// <summary>播一个音效：可以传槽位名 "R24"，也可以传旧音效名 "sfx_hit"。</summary>
         public static void Play(string name)
         {
             if (string.IsNullOrEmpty(name) || Muted) { return; }
             Init();
-            AudioClip c = Clip("Audio/Sfx", name);
+            AudioClip c = Clip("Audio/Sfx", ResolveSfx(name));
             if (c == null) { return; }
             _sfx.PlayOneShot(c, SfxVolume);
         }
@@ -186,7 +218,7 @@ namespace Jieqiao.UI
             var rt = btn.GetComponent<RectTransform>();
             btn.onClick.AddListener(delegate
             {
-                Play("sfx_click");
+                Play("R01");
                 if (rt != null) { V06UiV07.Press(rt); }
             });
         }

@@ -38,18 +38,58 @@ namespace Jieqiao.UI
 
         public bool IsLegal()
         {
-            // 主牌 24 张是硬规则；两种合法构图：
-            //   ① 玩家自组：单位 8 种（×2）+ 战术 2 种（×2）+ 额外 ≤4 张
-            //   ② 官方预组：单位 8 种（×2）+ 战术 4 种（×2），没有额外牌
-            if (units == null || units.Length != 8) { return false; }
-            if (MainCount != 24) { return false; }
-            bool formA = tactics != null && tactics.Length == 2 && (extras == null || extras.Length <= 4);
-            bool formB = tactics != null && tactics.Length == 4 && (extras == null || extras.Length == 0);
-            if (!formA && !formB) { return false; }
-            // 预备必须 3 张晋阶 + 3 张支援（引擎的不变量是 24 + 6 = 30 张）
+            // V0.7 自由组卡(§4):主牌共 24 张,构成不限;同名合计 ≤2。
+            // 存储:units/tactics 每个 ID 展开成 2 张,extras 每个 ID 1 张。
             if (upgrades == null || upgrades.Length != 3) { return false; }
             if (supports == null || supports.Length != 3) { return false; }
+            if (MainCount != 24) { return false; }
+            if (units == null || units.Length == 0) { return false; }
+            if (units.Length > 12 || (tactics != null && tactics.Length > 12)) { return false; }
+            if (extras != null && extras.Length > 24) { return false; }
+            // 领航必须来自主牌单位
+            if (!string.IsNullOrEmpty(vanguard) && Array.IndexOf(units, vanguard) < 0) { return false; }
+            return SameNameWithinLimit();
+        }
+
+        /// <summary>同名上限:按规范化卡名合计 ≤2(units/tactics 各算 2 张,extras 算 1 张)。</summary>
+        public bool SameNameWithinLimit()
+        {
+            Dictionary<string, int> count = new Dictionary<string, int>();
+            AddCounts(count, units, 2);
+            AddCounts(count, tactics, 2);
+            AddCounts(count, extras, 1);
+            foreach (KeyValuePair<string, int> kv in count)
+            {
+                if (kv.Value > 2) { return false; }
+            }
             return true;
+        }
+
+        private static void AddCounts(Dictionary<string, int> map, string[] ids, int per)
+        {
+            if (ids == null) { return; }
+            for (int i = 0; i < ids.Length; i++)
+            {
+                V06Card c = V06Catalog.ById(ids[i]);
+                string key = c == null ? ids[i] : c.Name;
+                if (key == null) { key = ids[i]; }
+                int cur;
+                map.TryGetValue(key, out cur);
+                map[key] = cur + per;
+            }
+        }
+
+        /// <summary>给玩家看的"还差什么"清单(保存/开局时用)。</summary>
+        public string LegalProblems()
+        {
+            List<string> p = new List<string>();
+            if (upgrades == null || upgrades.Length != 3) { p.Add("预备晋阶需 3 张"); }
+            if (supports == null || supports.Length != 3) { p.Add("预备支援需 3 张"); }
+            if (MainCount != 24) { p.Add("主牌 " + MainCount + "/24"); }
+            if (units == null || units.Length == 0) { p.Add("至少要 1 种单位"); }
+            if (!string.IsNullOrEmpty(vanguard) && units != null && Array.IndexOf(units, vanguard) < 0) { p.Add("领航不在主牌里"); }
+            if (!SameNameWithinLimit()) { p.Add("同名超过 2 张"); }
+            return p.Count == 0 ? "合法" : string.Join("、", p.ToArray());
         }
 
         public V06Precon ToPrecon()
@@ -92,6 +132,7 @@ namespace Jieqiao.UI
         public int coins = 800;
         public int gems = 60;
         public int packs = 2;
+        public bool devMode;
         public string avatarId = "";
         public string title = "见习远征者";
         // 累计统计
@@ -132,6 +173,31 @@ namespace Jieqiao.UI
     {
         public static V06SaveData Data;
 
+        /// <summary>开发者模式:全部卡牌视为已拥有、货币充足、商店免费、签到不限。</summary>
+        public static bool DevMode;
+
+        /// <summary>开关开发者模式;开启时把货币补满并存档。</summary>
+        public static string SetDevMode(bool on)
+        {
+            DevMode = on;
+            if (Data != null) { Data.devMode = on; }
+            if (on)
+            {
+                if (Data == null) { Load(); }
+                if (Data != null)
+                {
+                    Data.coins = 999999;
+                    Data.gems = 999999;
+                    Data.packs = 99;
+                    if (Data.level < 20) { Data.level = 20; }
+                    Data.exp = 0;
+                    Data.devMode = true;
+                    Save();
+                }
+            }
+            return on ? "开发者模式：开（全部卡牌可用、货币充足）" : "开发者模式：关";
+        }
+
         private static string PathOf
         {
             get { return Path.Combine(Application.persistentDataPath, "jieqiao-v06-save.json"); }
@@ -155,6 +221,7 @@ namespace Jieqiao.UI
                         if (d.claimedDays == null) { d.claimedDays = new List<int>(); }
                         Data = d;
                         EnsureDefaults();
+                          ApplyDevFlag();
                         return Data;
                     }
                 }
@@ -164,9 +231,40 @@ namespace Jieqiao.UI
                 Debug.LogWarning("[V06Save] 读取存档失败，改用新存档：" + ex.Message);
             }
             Data = new V06SaveData();
+              DevMode = false;
             EnsureDefaults();
             Save();
             return Data;
+        }
+
+        /// <summary>启动参数里是否带 -dev / --dev。</summary>
+        public static bool HasDevArg()
+        {
+            try
+            {
+                string[] a = System.Environment.GetCommandLineArgs();
+                for (int i = 0; i < a.Length; i++)
+                {
+                    if (a[i] == "-dev" || a[i] == "--dev" || a[i] == "-开发者") { return true; }
+                }
+            }
+            catch (Exception) { }
+            return false;
+        }
+
+        /// <summary>从存档恢复开发者模式开关。</summary>
+        public static void ApplyDevFlag()
+        {
+            DevMode = (Data != null && Data.devMode) || HasDevArg();
+            if (DevMode && Data != null && !Data.devMode)
+            {
+                Data.devMode = true;
+                Data.coins = 999999;
+                Data.gems = 999999;
+                Data.packs = 99;
+                if (Data.level < 20) { Data.level = 20; }
+                Save();
+            }
         }
 
         public static void Save()
@@ -222,6 +320,7 @@ namespace Jieqiao.UI
 
         public static int OwnedOf(string cardId)
         {
+            if (DevMode) { return 99; }
             if (Data == null || string.IsNullOrEmpty(cardId)) { return 0; }
             for (int i = 0; i < Data.owned.Count; i++)
             {
@@ -292,6 +391,12 @@ namespace Jieqiao.UI
         }
 
         public static bool CanCheckIn()
+        {
+            if (DevMode) { return true; }
+            return CanCheckInRaw();
+        }
+
+        private static bool CanCheckInRaw()
         {
             if (Data == null) { return false; }
             string today = TodayKey();

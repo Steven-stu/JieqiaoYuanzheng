@@ -112,45 +112,55 @@ namespace Jieqiao.UI
         {
             int idx = IndexOf(name);
             if (idx < 0) { return null; }
-            LoadSequences();
+            if (_seq == null) { _seqLoaded = false; LoadSequences(); }
+            if (_seq == null || idx >= _seq.Length) { return null; }
             if (_seq[idx] != null) { return _seq[idx]; }
             int fb = FxFallback[idx];
-            if (fb >= 0 && fb != idx && _seq[fb] != null) { return _seq[fb]; }
+            if (fb >= 0 && fb != idx && fb < _seq.Length && _seq[fb] != null) { return _seq[fb]; }
             return null;
         }
 
         private void LoadSequences()
         {
             if (_seqLoaded) { return; }
-            _seqLoaded = true;
+            // 先分配、最后才标记"已加载"：中途抛异常时不会留下 _seq=null 但 _seqLoaded=true
+            // 的坏状态（那会导致之后每次播放特效都 NullReferenceException，连出牌都被打断）。
             _seq = new Sprite[FxNames.Length][];
-            for (int i = 0; i < FxNames.Length; i++)
+            try
             {
-                string name = FxNames[i];
-                Sprite[] arr = new Sprite[FxFrames[i]];
-                int loaded = 0;
-                for (int f = 0; f < arr.Length; f++)
+                for (int i = 0; i < FxNames.Length; i++)
                 {
-                    string suffix = name + "_" + (f < 10 ? "0" + f : "" + f);
-                    Sprite s = Resources.Load<Sprite>("Art/UI/V06/FX/" + name + "/" + suffix);
-                    if (s == null) { s = Resources.Load<Sprite>("Art/UI/V06/FX/" + suffix); }
-                    arr[f] = s;
-                    if (s != null) { loaded++; }
+                    string name = FxNames[i];
+                    Sprite[] arr = new Sprite[FxFrames[i]];
+                    int loaded = 0;
+                    for (int f = 0; f < arr.Length; f++)
+                    {
+                        string suffix = name + "_" + (f < 10 ? "0" + f : "" + f);
+                        Sprite s = Resources.Load<Sprite>("Art/UI/V06/FX/" + name + "/" + suffix);
+                        if (s == null) { s = Resources.Load<Sprite>("Art/UI/V06/FX/" + suffix); }
+                        arr[f] = s;
+                        if (s != null) { loaded++; }
+                    }
+                    _seq[i] = loaded > 0 ? arr : null;
                 }
-                _seq[i] = loaded > 0 ? arr : null;
+                // 上一批的 hit_00..05 作为 slash 的兜底（那时名字叫 hit 不叫 slash）
+                if (_seq.Length > 0 && _seq[0] == null)
+                {
+                    Sprite[] hit = new Sprite[6];
+                    int n = 0;
+                    for (int f = 0; f < 6; f++)
+                    {
+                        hit[f] = Resources.Load<Sprite>("Art/UI/V06/FX/hit_0" + f);
+                        if (hit[f] != null) { n++; }
+                    }
+                    if (n > 0) { _seq[0] = hit; }
+                }
             }
-            // 上一批的 hit_00..05 作为 slash 的兜底（那时名字叫 hit 不叫 slash）
-            if (_seq[0] == null)
+            catch (System.Exception ex)
             {
-                Sprite[] hit = new Sprite[6];
-                int n = 0;
-                for (int f = 0; f < 6; f++)
-                {
-                    hit[f] = Resources.Load<Sprite>("Art/UI/V06/FX/hit_0" + f);
-                    if (hit[f] != null) { n++; }
-                }
-                if (n > 0) { _seq[0] = hit; }
+                Debug.LogWarning("[V06Fx] 序列帧加载异常（特效将缺帧，不影响规则）：" + ex.Message);
             }
+            _seqLoaded = true;
             if (Verbose) { Debug.Log("[V06Fx] 已加载序列帧：" + LoadedSequenceNames + "（" + LoadedSequences + " 套）"); }
         }
 
@@ -366,22 +376,37 @@ namespace Jieqiao.UI
         {
             switch (fxName)
             {
-                case "slash": return "sfx_hit";
-                case "shot": return "sfx_shoot";
-                case "spell": return "sfx_laser";
-                case "flag": return "sfx_flag";
-                case "guard": return "sfx_guard";
-                case "wall": return "sfx_guard";
-                case "heal": return "sfx_heal";
-                case "buff": return "sfx_coin";
-                case "death": return "sfx_death";
-                case "summon": return "sfx_confirm";
-                case "evolve": return "sfx_evolve";
-                case "fuse": return "sfx_fuse";
-                case "drain": return "sfx_heal";
-                case "ember": return "sfx_explosion";
-                case "echo": return "sfx_coin";
-                case "pressure": return "sfx_explosion";
+                case "slash": return "R24";        // 近战挥击
+                case "hit": return "R25";          // 近战命中
+                case "hit_light": return "R29";    // 轻受击
+                case "hit_heavy": return "R30";    // 重受击
+                case "shot": return "R26";         // 远程射击
+                case "spell": return "R27a";       // 法术施放
+                case "spell_attack": return "R27b";// 法术攻击
+                case "flag": return "R37";         // 旗受伤
+                case "flag_hit": return "R37";
+                case "flag_break": return "R38";   // 旗破裂
+                case "guard": return "R28";        // 格挡
+                case "wall": return "R28";
+                case "heal": return "R32";         // 治疗
+                case "drain": return "R32";
+                case "buff": return "R31";         // 增益
+                case "debuff": return "R20";       // 削弱/售罄类闷响
+                case "death": return "R33";        // 阵亡
+                case "summon": return "R11";       // 打出/部署
+                case "evolve": return "R34";       // 进化
+                case "fuse": return "R35";         // 融合
+                case "ember": return "R36";        // 爆炸/余烬
+                case "echo": return "R18";         // 回响(水晶声)
+                case "pressure": return "R40";     // 压力警告
+                case "round": return "R39";        // 回合切换
+                case "draw": return "R09";         // 抽牌
+                case "shuffle": return "R12";      // 洗牌
+                case "coin": return "R16";         // 金币
+                case "gem": return "R18";          // 宝石
+                case "buy": return "R19";          // 购买成功
+                case "rare": return "R15";         // 稀有卡
+                case "pack": return "R14";         // 开包
             }
             return null;
         }

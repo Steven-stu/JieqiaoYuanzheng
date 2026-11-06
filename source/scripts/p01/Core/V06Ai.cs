@@ -121,6 +121,9 @@ namespace Jieqiao
                 int worst = int.MaxValue;
                 for (int i = 0; i < rs.Count; i++)
                 {
+                    // 隐藏信息隔离:对手手牌里的响应牌属于未知信息,AI 只按"公开可预期"的
+                    // 掩护/放弃来估最坏情况,不能偷看对方的响应牌
+                    if (rs[i].Kind == V06ActionKind.Respond) { continue; }
                     V06Engine g = f.Clone();
                     string err;
                     if (!g.Apply(rs[i], out err)) { continue; }

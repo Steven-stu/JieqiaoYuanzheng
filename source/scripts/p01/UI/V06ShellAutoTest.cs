@@ -151,7 +151,7 @@ namespace Jieqiao.UI
             int picks = 0;
             for (int i = 0; i < 3; i++)
             {
-                if (ClickByName("DeckPick" + i)) { picks++; }
+                if (ClickByName("DeckCell" + i)) { picks++; }   // 卡墙格子名是 DeckCell（旧名 DeckPick 早已不存在，会误报"点不动"）
                 yield return new WaitForSeconds(0.05f);
             }
             _log.AppendLine("  组卡：点了 " + picks + "/3 张卡");
@@ -216,6 +216,8 @@ namespace Jieqiao.UI
             _log.AppendLine("  单人开局：" + (started ? "点了" : "点不到") + "，进战斗=" + inBattle
                 + (_battle != null && _battle.Engine != null ? ("（第 " + _battle.Engine.Round + " 轮）") : ""));
             if (!inBattle) { AddIssue("单人开局失败/没进战斗"); yield break; }
+            // 战绩数量必须在开打前取样：打完那一刻 ShowResult 已经 RecordMatch 过了
+            int recsBefore = V06Save.Data.records.Count;
 
             // 战斗里模拟玩家：点手牌 → 点空槽；没有部署就点让过
             int deployed = 0, passes = 0;
@@ -223,6 +225,7 @@ namespace Jieqiao.UI
             {
                 if (_battle.Engine == null || _battle.Engine.Finished || _shell.Visible) { break; }
                 if (_battle.IsZoomOpen) { _battle.HideZoomForTest(); yield return null; continue; }
+                if (_battle.IsResponding) { ClickByName("BtnDecline"); yield return new WaitForSeconds(0.05f); continue; }
                 if (!_battle.IsPlayerTurn) { yield return new WaitForSeconds(0.12f); continue; }
                 bool acted = false;
                 for (int h = 0; h < 6 && !acted; h++)
@@ -250,10 +253,11 @@ namespace Jieqiao.UI
 
             // 继续推进直到打完（上限 300 次，正常 12 轮约 120 次）
             int extra = 0;
-            while (_battle.Engine != null && !_battle.Engine.Finished && extra < 300)
+            while (_battle.Engine != null && !_battle.Engine.Finished && extra < 900)
             {
                 extra++;
                 if (_battle.IsZoomOpen) { _battle.HideZoomForTest(); yield return null; continue; }
+                if (_battle.IsResponding) { ClickByName("BtnDecline"); yield return new WaitForSeconds(0.05f); continue; }
                 if (!_battle.IsPlayerTurn) { yield return new WaitForSeconds(0.05f); continue; }
                 bool acted2 = false;
                 for (int h = 0; h < 4 && !acted2; h++)
@@ -274,7 +278,6 @@ namespace Jieqiao.UI
                 yield return new WaitForSeconds(0.05f);
             }
             _log.AppendLine("  战斗：额外推进 " + extra + " 步，结束=" + (_battle.Engine != null && _battle.Engine.Finished));
-            int recsBefore = V06Save.Data.records.Count;
             if (_battle.Engine != null && _battle.Engine.Finished)
             {
                 yield return new WaitForSeconds(0.3f);
@@ -282,6 +285,13 @@ namespace Jieqiao.UI
                     + "（新增 " + (V06Save.Data.records.Count - recsBefore) + "）");
                 if (V06Save.Data.records.Count <= recsBefore) { AddIssue("打完一局但战绩没有写入存档"); }
                 if (V06Audio.CurrentBgm != "battle") { AddIssue("战斗中 BGM 没切到 battle（当前 " + V06Audio.CurrentBgm + "）"); }
+                // 结算演出回归：面板要出现，全屏特效层不能堆（堆了就是"屏幕发白卡死"）
+                bool panelShown = _battle.ResultPanelVisible;
+                yield return new WaitForSeconds(1.2f);
+                int screenFx = _battle.ScreenFxCount;
+                _log.AppendLine("  结算：面板显示=" + panelShown + "，1.2 秒后全屏特效层=" + screenFx);
+                if (!panelShown) { AddIssue("打完一局但结算面板没出现"); }
+                if (screenFx > 3) { AddIssue("结算特效层堆了 " + screenFx + " 张（应≤3，否则会发白卡死）"); }
                 bool back = ClickByName("BtnBackLobby");
                 yield return new WaitForSeconds(0.3f);
                 _log.AppendLine("  回大厅：" + (back && _shell.Visible ? "OK" : "失败"));

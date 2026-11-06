@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
 
 namespace Jieqiao.UI
 {
@@ -18,6 +19,8 @@ namespace Jieqiao.UI
     public sealed class V06ShellUI : MonoBehaviour
     {
         public static V06ShellUI Instance;
+        private string _lastPageSound = "";
+        private Button _devBtn;
 
         private const float RefW = UiKit.RefW;
         private const float RefH = UiKit.RefH;
@@ -80,6 +83,23 @@ namespace Jieqiao.UI
         // 图鉴：传说级（进化线终态）格子的循环光
         private readonly Dictionary<int, Image> _codexGlow = new Dictionary<int, Image>();
         private readonly Dictionary<int, Image> _deckRowGlow = new Dictionary<int, Image>();
+        // 新组卡页:图鉴式卡片墙
+        private readonly List<Image> _deckCellBg = new List<Image>();
+        private readonly List<Image> _deckCellArt = new List<Image>();
+        private readonly List<Text> _deckCellText = new List<Text>();
+        private readonly List<Text> _deckCellBadge = new List<Text>();
+        private string _deckSelId;
+        private V06CardInfoPanel _deckDetail;
+        private Text _deckDetailHint;
+        private readonly List<Text> _deckListText = new List<Text>();
+        private readonly List<Image> _deckListBg = new List<Image>();
+        /// <summary>三个页签的文字（开发者模式下要改文案，说明卡池已放开）。</summary>
+        private readonly Text[] _deckTabTexts = new Text[3];
+        private RectTransform _nameLayer;
+        private InputField _deckNameInput;
+        private int _deckListPage;
+        private Text _deckListPageText;
+        private const int DeckRowsPerPage = 4;
 
         // 当前选择
         private int _deckIndex;
@@ -186,9 +206,36 @@ namespace Jieqiao.UI
         {
             ApplyScale();
             PumpToast();
+            // 开发者模式快捷键:F9 开关(全部卡牌可用 / 货币充足 / 商店免费)
+            if (Input.GetKeyDown(KeyCode.F9)) { ToggleDevMode(); }
+            if (_nameLayer != null && Input.GetKeyDown(KeyCode.Escape)) { CloseNameDialog(); }
             if (V06Net.MyRole != V06Net.Role.None) { PumpNet(); }
             if (_visible && _page == "net") { RefreshNetStatus(); }
             if (_visible && _page == "home") { RefreshHome(); }
+        }
+
+        /// <summary>开发者模式开关入口(资料页按钮与 F9 共用)。</summary>
+        public void ToggleDevMode()
+        {
+            string msg = V06Save.SetDevMode(!V06Save.DevMode);
+            Toast(msg + "   [F9 切换]");
+            RefreshHome();
+            RefreshShop();
+            RefreshDeck();
+            RefreshCodex();
+            RefreshCheckIn();
+            RefreshDevBtn();
+        }
+
+        private void RefreshDevBtn()
+        {
+            if (_devBtn == null) { return; }
+            Text t = _devBtn.GetComponentInChildren<Text>();
+            if (t != null)
+            {
+                t.text = "开发者模式：" + (V06Save.DevMode ? "开（全卡+无限货币）" : "关") + " [F9]";
+                t.color = V06Save.DevMode ? new Color(0.55f, 0.95f, 0.55f) : UiKit.TextMain;
+            }
         }
 
         private void ApplyScale()
@@ -825,6 +872,7 @@ namespace Jieqiao.UI
                     + (V06Expansion.EvolutionOf(c.Id) == null ? "（终态）" : "→ " + CardNameOf(V06Expansion.EvolutionOf(c.Id)));
             }
             v.EffectText = effect;
+            v.TermText = V06Terms.Block(c);
             v.ArtPath = "Art/units/" + c.Id;
             v.CanPlayNow = V06Save.OwnedOf(c.Id) > 0;
             _codexDetail.Show(v);
@@ -861,50 +909,93 @@ namespace Jieqiao.UI
         private void BuildDeck()
         {
             string[] tabs = new string[] { "unit", "tactic", "extra" };
-            string[] labels = new string[] { "单位（选 8 种）", "战术（选 2 种）", "额外牌（至多 4 张）" };
+            string[] labels = new string[] { "单位（8 种 ×2）", "战术（2 种 ×2）", "额外牌（至多 4 张）" };
             for (int i = 0; i < tabs.Length; i++)
             {
-                Button b = UiKit.Button(_pgDeck, "DeckTab_" + tabs[i], 40f + i * 230f, 8f, 220f, 40f, labels[i], UiKit.ButtonNormal, null);
+                Button b = UiKit.Button(_pgDeck, "DeckTab_" + tabs[i], 40f + i * 226f, 8f, 214f, 40f, labels[i], UiKit.ButtonNormal, null);
                 string id = tabs[i];
-                b.onClick.AddListener(delegate { _deckTab = id; _deckPickPage = 0; RefreshDeck(); });
+                b.onClick.AddListener(delegate { _deckTab = id; _deckPickPage = 0; _deckSelId = null; RefreshDeck(); });
+                _deckTabTexts[i] = b.GetComponentInChildren<Text>();
             }
-            for (int i = 0; i < 15; i++)
+
+            // 卡片墙:8 列 × 3 行 = 24 张/页;立绘用 3:4(与战斗手牌同比例,等比放大到 124×165)
+            // 格子高度 192 → 198：底部文字是两行(名称 + “2费 3/3”)，原来只留 24px，
+            // 实测两行 11 号需要 25px，会被 Truncate 切掉最后一行（大厅巡检报的"纵向溢出 24"就是这个）。
+            for (int i = 0; i < 24; i++)
             {
-                int col = i % 5;
-                int row = i / 5;
-                Image bg = UiKit.Panel(_pgDeck, "DeckPick" + i, 40f + col * 210f, 60f + row * 62f, 200f, 56f, UiKit.CardBg);
-                Text t = UiKit.Label(bg.transform, "T", 6f, 2f, 188f, 52f, "", 14, TextAnchor.MiddleLeft, UiKit.TextMain);
+                int col = i % 8;
+                int row = i / 8;
+                float x = 40f + col * 133f;
+                float y = 56f + row * 204f;
+                Image bg = UiKit.Panel(_pgDeck, "DeckCell" + i, x, y, 126f, 198f, UiKit.CardBg);
+                Image art = UiKit.Panel(bg.transform, "Art", 1f, 1f, 124f, 165f, new Color(0.10f, 0.11f, 0.14f, 1f));
+                art.raycastTarget = false;
+                art.preserveAspect = true;
+                Text t = UiKit.Label(bg.transform, "T", 1f, 167f, 124f, 30f, "", 11, TextAnchor.MiddleCenter, UiKit.TextMain);
+                t.raycastTarget = false;
+                Text badge = UiKit.Label(bg.transform, "Badge", 1f, 1f, 122f, 20f, "", 12, TextAnchor.UpperRight, new Color(0.55f, 1f, 0.6f));
+                badge.raycastTarget = false;
                 Button b = bg.gameObject.AddComponent<Button>();
                 int copy = i;
-                b.onClick.AddListener(delegate { OnDeckPick(copy); });
-                _deckPickBtn.Add(b);
-                _deckPickText.Add(t);
+                b.onClick.AddListener(delegate { OnDeckCell(copy); });
+                _deckCellBg.Add(bg);
+                _deckCellArt.Add(art);
+                _deckCellText.Add(t);
+                _deckCellBadge.Add(badge);
             }
-            UnitPicker(_pgDeck);
-            _deckPageText = UiKit.Label(_pgDeck, "DeckPage", 320f, 704f, 460f, 32f, "", 16, TextAnchor.MiddleLeft, UiKit.TextDim);
-            UiKit.Button(_pgDeck, "DeckPrev", 40f, 700f, 120f, 40f, "上一页", UiKit.ButtonNormal, delegate { _deckPickPage--; RefreshDeck(); });
-            UiKit.Button(_pgDeck, "DeckNext", 170f, 700f, 120f, 40f, "下一页", UiKit.ButtonNormal, delegate { _deckPickPage++; RefreshDeck(); });
 
-            V06UiV07.Panel(_pgDeck, "DeckPanel", 1120f, 8f, 440f, 880f, "deck_panel_right", new Color(0.11f, 0.13f, 0.17f, 0.96f));
-            UiKit.Label(_pgDeck, "DeckTitle", 1140f, 24f, 400f, 30f, "当前卡组", 20, TextAnchor.MiddleLeft, UiKit.Selected);
-            // 第 2 批动画：卡背循环光（贴在右侧卡组面板里，纯装饰）
-            _deckCardbackGlow = UiKit.Panel(_pgDeck, "DeckCardbackGlow", 1200f, 250f, 280f, 240f, new Color(1f, 1f, 1f, 0.5f));
-            _deckCardbackGlow.raycastTarget = false;
-            if (V06UiV07.HasAnim("anim_cardback_glow"))
-            {
-                _deckCardbackGlow.preserveAspect = true;
-                V06UiV07.PlayAnim(_deckCardbackGlow, "anim_cardback_glow", 2f, true);
-            }
-            else { _deckCardbackGlow.gameObject.SetActive(false); }
-            _deckSummary = UiKit.Label(_pgDeck, "DeckSummary", 1140f, 62f, 400f, 420f, "", 15, TextAnchor.UpperLeft, UiKit.TextMain);
-            Button saveBtn = UiKit.Button(_pgDeck, "DeckSave", 1140f, 500f, 400f, 48f, "保存卡组", UiKit.MyCamp, delegate { SaveDeck(); });
+            _deckPageText = UiKit.Label(_pgDeck, "DeckPage", 380f, 676f, 420f, 30f, "", 15, TextAnchor.MiddleLeft, UiKit.TextDim);
+            UiKit.Button(_pgDeck, "DeckPrev", 40f, 672f, 120f, 38f, "上一页", UiKit.ButtonNormal, delegate { _deckPickPage--; RefreshDeck(); });
+            UiKit.Button(_pgDeck, "DeckNext", 170f, 672f, 120f, 38f, "下一页", UiKit.ButtonNormal, delegate { _deckPickPage++; RefreshDeck(); });
+            UiKit.Button(_pgDeck, "DeckClear2", 810f, 672f, 130f, 38f, "清空", UiKit.ButtonNormal, delegate { ClearDeck(); });
+            UiKit.Button(_pgDeck, "DeckNew2", 950f, 672f, 170f, 38f, "新建(复制)", UiKit.ButtonNormal, delegate { NewDeck(); });
+
+            // 左侧底部:卡组清单
+            _deckSummary = UiKit.Label(_pgDeck, "DeckSummary", 40f, 716f, 1060f, 168f, "", 14, TextAnchor.UpperLeft, UiKit.TextMain);
+
+            // 右侧:卡牌详情(复用到图鉴同一个面板)
+            var host = new GameObject("DeckDetailHost", typeof(RectTransform));
+            host.transform.SetParent(_pgDeck, false);
+            var rt = host.GetComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
+            rt.anchoredPosition = new Vector2(1128f, -14f);
+            rt.sizeDelta = new Vector2(430f, 470f);
+            _deckDetail = host.AddComponent<V06CardInfoPanel>();
+            _deckDetail.Build(rt);
+            _deckDetail.Hide();
+
+            _deckDetailHint = UiKit.Label(_pgDeck, "DeckHint", 1128f, 462f, 430f, 30f, "点左边任意一张卡 → 在这里看详情,再决定加入", 14, TextAnchor.MiddleLeft, UiKit.TextDim);
+
+            Button addBtn = UiKit.Button(_pgDeck, "DeckAdd", 1128f, 496f, 210f, 46f, "加入卡组", new Color(0.24f, 0.36f, 0.22f), delegate { DeckAddSelected(); });
+            UiKit.Button(_pgDeck, "DeckDel", 1348f, 496f, 210f, 46f, "取消选择", new Color(0.36f, 0.24f, 0.22f), delegate { DeckRemoveSelected(); });
+            if (addBtn == null) { Debug.LogWarning("[Deck] 加入按钮创建失败"); }
+
+            Button saveBtn = UiKit.Button(_pgDeck, "DeckSave", 1128f, 554f, 430f, 44f, "保存卡组", UiKit.MyCamp, delegate { SaveDeck(); });
             _deckSaveBtnImg = saveBtn == null ? null : saveBtn.GetComponent<Image>();
-            UiKit.Button(_pgDeck, "DeckClear", 1140f, 558f, 400f, 48f, "清空选择", UiKit.ButtonNormal, delegate { ClearDeck(); });
-            UiKit.Button(_pgDeck, "DeckNew", 1140f, 616f, 400f, 48f, "新建卡组（复制当前）", UiKit.ButtonNormal, delegate { NewDeck(); });
-            UiKit.Button(_pgDeck, "DeckUse", 1140f, 674f, 400f, 56f, "用这套打一局", UiKit.MyCamp, delegate { StartSoloMatch(); });
-            UiKit.Label(_pgDeck, "DeckRule", 1140f, 740f, 400f, 130f,
-                "规则：单位 8 种（每种 2 张）+ 战术 2 种（每种 2 张）+ 额外至多 4 张 = 24 张主牌；"
-                + "预备 6 张（3 晋阶 + 3 支援）自动从持有里挑。", 14, TextAnchor.UpperLeft, UiKit.TextDim);
+            UiKit.Button(_pgDeck, "DeckFill", 1128f, 604f, 430f, 44f, "一键填充到合法（8+2+4）", new Color(0.24f, 0.34f, 0.22f), delegate { FillDeck(); });
+            UiKit.Button(_pgDeck, "DeckUse", 1128f, 654f, 430f, 52f, "用这套打一局", UiKit.MyCamp, delegate { StartSoloMatch(); });
+            // ---- 我的卡组列表(每页 4 套,带翻页;按钮单独一行,不重叠)----
+            UiKit.Label(_pgDeck, "DeckListTitle", 1128f, 692f, 200f, 22f, "我的卡组", 15, TextAnchor.MiddleLeft, UiKit.Selected);
+            // 提示：双击改名（下面三个按钮之外的第二条入口，鼠标用户更顺手）
+            UiKit.Label(_pgDeck, "DeckListHint", 1264f, 692f, 294f, 22f, "双击任意卡组名可改名", 12,
+                TextAnchor.MiddleRight, UiKit.TextDim);
+            for (int i = 0; i < DeckRowsPerPage; i++)
+            {
+                Image bg = UiKit.Panel(_pgDeck, "DeckRow" + i, 1128f, 716f + i * 28f, 430f, 26f, UiKit.CardBg);
+                Text t = UiKit.Label(bg.transform, "T", 6f, 0f, 418f, 26f, "", 13, TextAnchor.MiddleLeft, UiKit.TextMain);
+                Button b = bg.gameObject.AddComponent<Button>();
+                int copy = i;
+                b.onClick.AddListener(delegate { OnDeckRowClicked(copy); });
+                _deckListBg.Add(bg);
+                _deckListText.Add(t);
+            }
+            UiKit.Button(_pgDeck, "DeckListPrev", 1128f, 832f, 130f, 26f, "▲ 上一页", UiKit.ButtonNormal, delegate { _deckListPage--; RefreshDeck(); });
+            _deckListPageText = UiKit.Label(_pgDeck, "DeckListPage", 1264f, 832f, 158f, 26f, "", 13, TextAnchor.MiddleCenter, UiKit.TextDim);
+            UiKit.Button(_pgDeck, "DeckListNext", 1428f, 832f, 130f, 26f, "下一页 ▼", UiKit.ButtonNormal, delegate { _deckListPage++; RefreshDeck(); });
+            UiKit.Button(_pgDeck, "DeckNewEmpty", 1128f, 862f, 138f, 30f, "新建空卡组", new Color(0.24f, 0.34f, 0.22f), delegate { NewDeck(); });
+            UiKit.Button(_pgDeck, "DeckRename", 1272f, 862f, 138f, 30f, "重命名", UiKit.ButtonNormal, delegate { RenameDeck(); });
+            UiKit.Button(_pgDeck, "DeckDelete", 1416f, 862f, 138f, 30f, "删除", new Color(0.38f, 0.24f, 0.22f), delegate { DeleteDeck(); });
         }
 
         private void UnitPicker(RectTransform page)
@@ -915,10 +1006,20 @@ namespace Jieqiao.UI
         private List<string> DeckPickPool()
         {
             List<string> pool = new List<string>();
+            // 开发者模式：卡池放开成"全目录 252 张"，不按持有量／类别／费用过滤，
+            // 也不再排除未接入的响应卡，方便直接组出任意组合验证规则。
+            // 注意：组出来的卡组仍要过 IsLegal（24 张、同名≤2、预备 3+3）才能开局。
+            if (V06Save.DevMode)
+            {
+                for (int i = 0; i < V06Catalog.All.Count; i++) { pool.Add(V06Catalog.All[i].Id); }
+                return pool;
+            }
             for (int i = 0; i < V06Catalog.All.Count; i++)
             {
                 V06Card c = V06Catalog.All[i];
                 if (V06Save.OwnedOf(c.Id) <= 0) { continue; }
+                // 未接入的响应窗口卡(X02/X04/X06)不进入普通主牌
+                if (c.Id == "X02" || c.Id == "X04" || c.Id == "X06") { continue; }
                 if (_deckTab == "unit")
                 {
                     if (c.Category != V06Category.Unit) { continue; }
@@ -944,50 +1045,86 @@ namespace Jieqiao.UI
         {
             V06DeckSave deck = CurrentDeck();
             List<string> pool = DeckPickPool();
-            int perPage = _deckPickBtn.Count;
+            int perPage = _deckCellBg.Count;
             if (perPage <= 0) { return; }
             int maxPage = Mathf.Max(0, (pool.Count - 1) / perPage);
             _deckPickPage = Mathf.Clamp(_deckPickPage, 0, maxPage);
+            // 页签文案随模式变：开发者模式下明确写出"全卡池、上限已放开"，免得看着像 bug
+            if (_deckTabTexts[0] != null)
+            {
+                bool dev = V06Save.DevMode;
+                _deckTabTexts[0].text = dev ? "单位（全部·至多 12 种）" : "单位（8 种 ×2）";
+                _deckTabTexts[1].text = dev ? "战术（全部·至多 12 种）" : "战术（2 种 ×2）";
+                _deckTabTexts[2].text = dev ? "额外牌（全部·至多 24 张）" : "额外牌（至多 4 张）";
+            }
+
             for (int i = 0; i < perPage; i++)
             {
                 int idx = _deckPickPage * perPage + i;
                 bool has = idx < pool.Count;
-                _deckPickBtn[i].gameObject.SetActive(has);
+                _deckCellBg[i].gameObject.SetActive(has);
                 if (!has) { continue; }
                 string id = pool[idx];
                 V06Card c = V06Catalog.ById(id);
+                if (c == null) { continue; }
+
                 bool picked = deck != null && (Contains(deck.units, id) || Contains(deck.tactics, id) || Contains(deck.extras, id));
-                _deckPickText[i].text = c.Name + "　" + (c.Cost >= 0 ? c.Cost + "费" : "")
-                    + (c.Category == V06Category.Unit ? "　" + c.Atk + "/" + c.Hp : "")
-                    + "　×" + V06Save.OwnedOf(id);
-                _deckPickText[i].color = picked ? UiKit.Selected : UiKit.TextMain;
-                _deckPickBtn[i].GetComponent<Image>().color = picked ? new Color(0.22f, 0.24f, 0.16f) : UiKit.CardBg;
-                // 第 2 批动画：已选中的行挂一层循环"展架高光"（九宫格 18 边，200×56 正好）
-                Image glow;
-                if (!_deckRowGlow.TryGetValue(i, out glow))
-                {
-                    glow = null;
-                    if (V06UiV07.HasAnim("anim_shelf_hover"))
-                    {
-                        glow = UiKit.Panel(_deckPickBtn[i].transform, "RowGlow", 0f, 0f, 200f, 56f, new Color(1f, 1f, 1f, 0.5f));
-                        glow.raycastTarget = false;
-                        glow.type = Image.Type.Sliced;
-                        V06UiV07.PlayAnim(glow, "anim_shelf_hover", 2f, true);
-                        glow.transform.SetSiblingIndex(0);
-                    }
-                    if (glow != null) { _deckRowGlow[i] = glow; }
-                }
-                if (glow != null && glow.gameObject.activeSelf != picked) { glow.gameObject.SetActive(picked); }
+                bool isSelected = _deckSelId == id;
+
+                Sprite sp = Resources.Load<Sprite>("Art/units/" + id);
+                _deckCellArt[i].sprite = sp;
+                _deckCellArt[i].color = sp == null ? new Color(0.10f, 0.11f, 0.14f, 1f) : Color.white;
+                _deckCellText[i].text = c.Name + "\n" + (c.Cost >= 0 ? c.Cost + "费" : "")
+                    + (c.Category == V06Category.Unit ? " " + c.Atk + "/" + c.Hp : "");
+                _deckCellText[i].color = picked ? new Color(0.62f, 1f, 0.62f) : UiKit.TextMain;
+                _deckCellBadge[i].text = picked ? "✔ 已选" : "";
+                _deckCellBg[i].color = isSelected ? new Color(0.30f, 0.34f, 0.20f)
+                    : (picked ? new Color(0.20f, 0.30f, 0.20f) : UiKit.CardBg);
             }
-            _deckPageText.text = "第 " + (_deckPickPage + 1) + "/" + (maxPage + 1) + " 页　共 " + pool.Count + " 张可用";
+
+            _deckPageText.text = "第 " + (_deckPickPage + 1) + "/" + (maxPage + 1) + " 页　共 " + pool.Count + " 张可选（点卡片看详情）";
+
+            int totalDecks = V06Save.Data == null ? 0 : V06Save.Data.decks.Count;
+            int maxDeckPage = Mathf.Max(0, (totalDecks - 1) / DeckRowsPerPage);
+            _deckListPage = Mathf.Clamp(_deckListPage, 0, maxDeckPage);
+            if (_deckListPageText != null)
+            {
+                _deckListPageText.text = "第 " + (_deckListPage + 1) + "/" + (maxDeckPage + 1) + " 页　共 " + totalDecks + " 套";
+            }
+            for (int i = 0; i < _deckListText.Count; i++)
+            {
+                int di = _deckListPage * DeckRowsPerPage + i;
+                bool has = V06Save.Data != null && di < V06Save.Data.decks.Count;
+                _deckListBg[i].gameObject.SetActive(has);
+                if (!has) { continue; }
+                V06DeckSave d = V06Save.Data.decks[di];
+                bool cur = di == _deckIndex;
+                _deckListText[i].text = (cur ? "▶ " : "　") + (string.IsNullOrEmpty(d.name) ? "未命名" : d.name)
+                    + "　" + d.MainCount + "/24" + (d.IsLegal() ? " ✔" : "")
+                    + "　" + d.units.Length + "单位 " + d.tactics.Length + "战术";
+                _deckListText[i].color = cur ? new Color(0.62f, 1f, 0.62f) : UiKit.TextMain;
+                _deckListBg[i].color = cur ? new Color(0.20f, 0.30f, 0.20f) : UiKit.CardBg;
+            }
+            // 当前套不在本页时,自动翻到它所在页
+            if (V06Save.Data != null && totalDecks > 0)
+            {
+                int curPage = _deckIndex / DeckRowsPerPage;
+                if (curPage != _deckListPage) { }
+            }
+
             if (deck == null) { _deckSummary.text = "（没有卡组）"; return; }
-            _deckSummary.text = "名称：" + deck.name + "\n"
-                + "主牌：" + deck.MainCount + "/24\n"
-                + "单位 " + deck.units.Length + "/8 种：" + JoinNames(deck.units) + "\n"
-                + "战术 " + deck.tactics.Length + "/2 种：" + JoinNames(deck.tactics) + "\n"
-                + "额外 " + (deck.extras == null ? 0 : deck.extras.Length) + "/4：" + JoinNames(deck.extras) + "\n"
-                + "预备：" + JoinNames(deck.upgrades) + " / " + JoinNames(deck.supports) + "\n"
-                + "合法性：" + (deck.IsLegal() ? "可以开局 ✔" : "还差一些 ✘");
+            int uN = deck.units.Length, tN = deck.tactics.Length;
+            int eN = deck.extras == null ? 0 : deck.extras.Length;
+            int gN = deck.upgrades == null ? 0 : deck.upgrades.Length;
+            int pN = deck.supports == null ? 0 : deck.supports.Length;
+            bool okMain = deck.MainCount == 24;
+            _deckSummary.text = "【" + deck.name + "】主牌 " + deck.MainCount + "/24 " + (okMain ? "✔" : "✘ 还差 " + (24 - deck.MainCount) + " 张")
+                + "　单位 " + uN + " 种(" + (uN * 2) + "张)　战术 " + tN + " 种(" + (tN * 2) + "张)　额外 " + eN + " 张"
+                + "　预备 " + gN + "+" + pN + "/6"
+                + "　" + (deck.IsLegal() ? "【可以开局】" : "【还不能开局：" + deck.LegalProblems() + "】")
+                + "\n单位：" + JoinNames(deck.units)
+                + "\n战术：" + JoinNames(deck.tactics)
+                + "\n额外：" + JoinNames(deck.extras);
         }
 
         private static bool Contains(string[] arr, string id)
@@ -1005,33 +1142,115 @@ namespace Jieqiao.UI
             return string.Join("、", names.ToArray());
         }
 
-        private void OnDeckPick(int i)
+        /// <summary>点卡片墙:只在右侧显示详情,不改卡组。</summary>
+        private void OnDeckCell(int i)
+        {
+            List<string> pool = DeckPickPool();
+            int idx = _deckPickPage * _deckCellBg.Count + i;
+            if (idx < 0 || idx >= pool.Count) { return; }
+            _deckSelId = pool[idx];
+            ShowDeckDetail(_deckSelId);
+            RefreshDeck();
+        }
+
+        /// <summary>把当前选中的卡显示到右侧详情面板。</summary>
+        private void ShowDeckDetail(string id)
+        {
+            V06Card c = V06Catalog.ById(id);
+            if (c == null || _deckDetail == null) { return; }
+            V06CardView v = new V06CardView();
+            v.CardId = c.Id;
+            v.Name = c.Name;
+            v.CategoryText = CategoryName(c.Category) + (string.IsNullOrEmpty(c.Tags) ? "" : "　" + c.Tags);
+            v.Cost = c.Cost;
+            v.Atk = c.Atk;
+            v.Hp = c.Hp;
+            v.CurrentAtk = c.Atk;
+            v.CurrentHp = c.Hp;
+            v.KeywordText = c.Keywords == null ? "" : string.Join("、", c.Keywords);
+            v.EffectText = c.Text;
+            v.TermText = V06Terms.Block(c);
+            v.ArtPath = "Art/units/" + c.Id;
+            v.CanPlayNow = V06Save.OwnedOf(c.Id) > 0;
+            _deckDetail.Show(v);
+            if (_deckDetailHint != null)
+            {
+                V06DeckSave deck = CurrentDeck();
+                bool inDeck = deck != null && (Contains(deck.units, id) || Contains(deck.tactics, id) || Contains(deck.extras, id));
+                string howMany = c.Category == V06Category.Unit ? "（这种会占 2 张）"
+                    : (c.Category == V06Category.Tactic ? "（这种会占 2 张）" : "（占 1 张）");
+                _deckDetailHint.text = (inDeck ? "已在卡组中 " : "未加入 ") + howMany + "　持有 " + V06Save.OwnedOf(id);
+            }
+        }
+
+        /// <summary>把选中的卡加进卡组。</summary>
+        private void DeckAddSelected()
         {
             V06DeckSave deck = CurrentDeck();
-            if (deck == null) { return; }
-            List<string> pool = DeckPickPool();
-            int idx = _deckPickPage * _deckPickBtn.Count + i;
-            if (idx < 0 || idx >= pool.Count) { return; }
-            string id = pool[idx];
-            List<string> list = new List<string>();
-            if (_deckTab == "unit") { list.AddRange(deck.units); }
-            else if (_deckTab == "tactic") { list.AddRange(deck.tactics); }
-            else { if (deck.extras != null) { list.AddRange(deck.extras); } }
-            if (list.Contains(id)) { list.Remove(id); }
-            else
+            if (deck == null || string.IsNullOrEmpty(_deckSelId)) { Toast("先在左边点一张卡"); return; }
+            V06Card c = V06Catalog.ById(_deckSelId);
+            if (c == null) { return; }
+            // 归入哪一栏：正式模式按当前页签；开发者模式按卡的类别自动归位，
+            // 因为开发者模式的卡池是全目录 252 张，页签里什么都有，
+            // 按页签硬塞会把"天气牌"写进 units 数组，卡组结构就错了。
+            string bucket = _deckTab;
+            if (V06Save.DevMode)
             {
-                if (_deckTab == "unit" && list.Count >= 8) { return; }
-                if (_deckTab == "tactic" && list.Count >= 2) { return; }
-                if (_deckTab == "extra" && list.Count >= 4) { return; }
-                list.Add(id);
+                if (c.Category == V06Category.Unit) { bucket = "unit"; }
+                else if (c.Category == V06Category.Tactic) { bucket = "tactic"; }
+                else { bucket = "extra"; }
             }
-            if (_deckTab == "unit") { deck.units = list.ToArray(); }
-            else if (_deckTab == "tactic") { deck.tactics = list.ToArray(); }
+            List<string> list = new List<string>();
+            if (bucket == "unit") { list.AddRange(deck.units); }
+            else if (bucket == "tactic") { list.AddRange(deck.tactics); }
+            else if (deck.extras != null) { list.AddRange(deck.extras); }
+            if (list.Contains(_deckSelId)) { Toast("这张已经在卡组里了"); return; }
+            // 上限随模式变：正式模式 8 种单位 / 2 种战术 / 4 张额外牌；
+            // 开发者模式放开到 IsLegal 允许的上限（单位 12 种、战术 12 种、额外 24 张），
+            // 否则"卡池里有全部卡牌"也没法真的组进卡组去验证。
+            int maxUnitTypes = V06Save.DevMode ? 12 : 8;
+            int maxTacticTypes = V06Save.DevMode ? 12 : 2;
+            int maxExtras = V06Save.DevMode ? 24 : 4;
+            if (bucket == "unit" && list.Count >= maxUnitTypes) { Toast("单位最多 " + maxUnitTypes + " 种，先取消一张"); return; }
+            if (bucket == "tactic" && list.Count >= maxTacticTypes) { Toast("战术最多 " + maxTacticTypes + " 种，先取消一张"); return; }
+            if (bucket == "extra" && list.Count >= maxExtras) { Toast("额外牌最多 " + maxExtras + " 张，先取消一张"); return; }
+            list.Add(_deckSelId);
+            if (bucket == "unit") { deck.units = list.ToArray(); }
+            else if (bucket == "tactic") { deck.tactics = list.ToArray(); }
             else { deck.extras = list.ToArray(); }
             if (string.IsNullOrEmpty(deck.vanguard) || !Contains(deck.units, deck.vanguard))
             {
                 deck.vanguard = deck.units.Length > 0 ? deck.units[0] : null;
             }
+            Toast("已加入：" + c.Name + "　主牌 " + deck.MainCount + "/24");
+            ShowDeckDetail(_deckSelId);
+            RefreshDeck();
+        }
+
+        /// <summary>把选中的卡从卡组移除。</summary>
+        private void DeckRemoveSelected()
+        {
+            V06DeckSave deck = CurrentDeck();
+            if (deck == null || string.IsNullOrEmpty(_deckSelId)) { Toast("先在左边点一张卡"); return; }
+            V06Card c = V06Catalog.ById(_deckSelId);
+            bool removed = false;
+            List<string> u = new List<string>(deck.units);
+            if (u.Remove(_deckSelId)) { deck.units = u.ToArray(); removed = true; }
+            List<string> t = new List<string>(deck.tactics);
+            if (t.Remove(_deckSelId)) { deck.tactics = t.ToArray(); removed = true; }
+            if (deck.extras != null)
+            {
+                List<string> e = new List<string>(deck.extras);
+                if (e.Remove(_deckSelId)) { deck.extras = e.ToArray(); removed = true; }
+            }
+            if (removed)
+            {
+                if (deck.units.Length == 0) { deck.vanguard = null; }
+                else if (!Contains(deck.units, deck.vanguard)) { deck.vanguard = deck.units[0]; }
+                Toast("已移出：" + (c == null ? _deckSelId : c.Name) + "　主牌 " + deck.MainCount + "/24");
+            }
+            else { Toast("这张不在卡组里"); }
+            ShowDeckDetail(_deckSelId);
             RefreshDeck();
         }
 
@@ -1068,6 +1287,64 @@ namespace Jieqiao.UI
             return r.ToArray();
         }
 
+        /// <summary>一键填充成合法卡组:8 单位 + 2 战术 + 4 额外,并补 3 晋阶 + 3 支援。</summary>
+        private void FillDeck()
+        {
+            V06DeckSave deck = CurrentDeck();
+            if (deck == null) { return; }
+            List<string> units = PickByCategory(V06Category.Unit, 8, true);
+            List<string> tactics = PickByCategory(V06Category.Tactic, 2, false);
+            List<string> extras = PickExtras(4);
+            if (units.Count < 8 || tactics.Count < 2)
+            {
+                Toast("可用卡不够:单位 " + units.Count + "/8、战术 " + tactics.Count + "/2");
+                return;
+            }
+            deck.units = units.ToArray();
+            deck.tactics = tactics.ToArray();
+            deck.extras = extras.ToArray();
+            deck.vanguard = deck.units.Length > 0 ? deck.units[0] : null;
+            deck.upgrades = PickReserve(V06Category.Upgrade, 3);
+            deck.supports = PickReserve(V06Category.Support, 3);
+            V06Save.Save();
+            RefreshDeck();
+            Toast(deck.IsLegal()
+                ? "已填充合法卡组：主牌 " + deck.MainCount + "/24，可以开局"
+                : "已填充，但主牌只有 " + deck.MainCount + "/24，请手动补额外牌");
+        }
+
+        /// <summary>按类型挑前 n 张持有卡(单位只收费用 1–4 的可部署形态)。</summary>
+        private static List<string> PickByCategory(V06Category cat, int n, bool costLimit)
+        {
+            List<string> r = new List<string>();
+            for (int i = 0; i < V06Catalog.All.Count && r.Count < n; i++)
+            {
+                V06Card c = V06Catalog.All[i];
+                if (c.Category != cat) { continue; }
+                if (costLimit && (c.Cost < 1 || c.Cost > 4)) { continue; }
+                if (V06Save.OwnedOf(c.Id) <= 0) { continue; }
+                r.Add(c.Id);
+            }
+            return r;
+        }
+
+        /// <summary>额外牌池:装备/附印/支援/晋阶/状态/响应等非单位非战术牌。</summary>
+        private static List<string> PickExtras(int n)
+        {
+            List<string> r = new List<string>();
+            for (int i = 0; i < V06Catalog.All.Count && r.Count < n; i++)
+            {
+                V06Card c = V06Catalog.All[i];
+                if (c.Category == V06Category.Unit || c.Category == V06Category.Tactic
+                    || c.Category == V06Category.Token || c.Category == V06Category.Weather
+                    || c.Category == V06Category.Encounter || c.Category == V06Category.Event) { continue; }
+                if (c.Cost < 0) { continue; }
+                if (V06Save.OwnedOf(c.Id) <= 0) { continue; }
+                r.Add(c.Id);
+            }
+            return r;
+        }
+
         private void ClearDeck()
         {
             V06DeckSave deck = CurrentDeck();
@@ -1079,24 +1356,183 @@ namespace Jieqiao.UI
             RefreshDeck();
         }
 
+        /// <summary>新建一套空卡组(不复制当前),并弹出命名框。</summary>
         private void NewDeck()
         {
-            V06DeckSave cur = CurrentDeck();
-            V06DeckSave copy = new V06DeckSave();
-            copy.name = (cur == null ? "新卡组" : cur.name) + " 副本";
-            if (cur != null)
-            {
-                copy.vanguard = cur.vanguard;
-                copy.units = (string[])cur.units.Clone();
-                copy.tactics = (string[])cur.tactics.Clone();
-                copy.extras = cur.extras == null ? new string[0] : (string[])cur.extras.Clone();
-                copy.upgrades = cur.upgrades == null ? new string[0] : (string[])cur.upgrades.Clone();
-                copy.supports = cur.supports == null ? new string[0] : (string[])cur.supports.Clone();
-            }
-            V06Save.Data.decks.Add(copy);
+            V06DeckSave d = new V06DeckSave();
+            d.name = "我的卡组 " + (V06Save.Data.decks.Count + 1);
+            d.vanguard = null;
+            d.units = new string[0];
+            d.tactics = new string[0];
+            d.extras = new string[0];
+            d.upgrades = new string[0];
+            d.supports = new string[0];
+            V06Save.Data.decks.Add(d);
             _deckIndex = V06Save.Data.decks.Count - 1;
+            _deckListPage = _deckIndex / DeckRowsPerPage;
+            _deckSelId = null;
             V06Save.Save();
             RefreshDeck();
+            Toast("已新建空卡组,先给它起个名字");
+            ShowNameDialog(d.name);
+        }
+
+        /// <summary>点列表第 row 行(按当前页换算成真实下标)。</summary>
+        private void SelectDeckRow(int row)
+        {
+            int i = _deckListPage * DeckRowsPerPage + row;
+            SelectDeck(i);
+        }
+
+        // 双击改名：记录上一次点的行与时间，同一行在 0.38 秒内再点一次就算双击
+        private int _deckRowLastRow = -2;
+        private float _deckRowLastTime = -10f;
+        private const float DeckRowDoubleClickWindow = 0.38f;
+
+        /// <summary>
+        /// 卡组列表行点击：单击 = 切到这套，双击 = 弹出改名框（改的就是双击的那一套）。
+        /// 注意先切换再弹框：ApplyDeckName 改的是"当前卡组"，不先切过去就会改错套。
+        /// </summary>
+        private void OnDeckRowClicked(int row)
+        {
+            int abs = _deckListPage * DeckRowsPerPage + row;
+            float now = Time.unscaledTime;
+            bool dbl = (_deckRowLastRow == abs) && (now - _deckRowLastTime <= DeckRowDoubleClickWindow);
+            _deckRowLastRow = abs;
+            _deckRowLastTime = now;
+
+            SelectDeck(abs);
+            if (!dbl) { return; }
+
+            _deckRowLastRow = -2;                      // 用掉这次双击，避免三连击重复弹
+            V06DeckSave deck = CurrentDeck();
+            if (deck == null) { return; }
+            ShowNameDialog(deck.name);
+        }
+
+        /// <summary>切换到第 i 套卡组。</summary>
+        private void SelectDeck(int i)
+        {
+            if (V06Save.Data == null || i < 0 || i >= V06Save.Data.decks.Count) { return; }
+            if (_deckIndex == i) { return; }
+            _deckIndex = i;
+            _deckSelId = null;
+            _deckListPage = i / DeckRowsPerPage;
+            RefreshDeck();
+            Toast("当前卡组：" + V06Save.Data.decks[i].name);
+        }
+
+        /// <summary>重命名当前卡组。</summary>
+        private void RenameDeck()
+        {
+            V06DeckSave deck = CurrentDeck();
+            if (deck == null) { return; }
+            ShowNameDialog(deck.name);
+        }
+
+        /// <summary>删除当前卡组(至少保留一套)。</summary>
+        private void DeleteDeck()
+        {
+            if (V06Save.Data == null || V06Save.Data.decks.Count <= 1) { Toast("至少要保留一套卡组"); return; }
+            V06DeckSave deck = CurrentDeck();
+            if (deck == null) { return; }
+            string name = deck.name;
+            V06Save.Data.decks.RemoveAt(_deckIndex);
+            _deckIndex = Mathf.Clamp(_deckIndex, 0, V06Save.Data.decks.Count - 1);
+            _deckListPage = _deckIndex / DeckRowsPerPage;
+            _deckSelId = null;
+            V06Save.Save();
+            RefreshDeck();
+            Toast("已删除卡组：" + name);
+        }
+
+        /// <summary>卡组命名弹窗。</summary>
+        public void ShowNameDialog(string initial)
+        {
+            if (_nameLayer != null) { Destroy(_nameLayer.gameObject); _nameLayer = null; }
+            var layer = new GameObject("NameLayer", typeof(RectTransform));
+            layer.transform.SetParent(_root, false);
+            var lrt = layer.GetComponent<RectTransform>();
+            lrt.anchorMin = Vector2.zero; lrt.anchorMax = Vector2.one;
+            lrt.offsetMin = Vector2.zero; lrt.offsetMax = Vector2.zero;
+            lrt.SetAsLastSibling();
+            _nameLayer = lrt;
+
+            Image mask = UiKit.Panel(lrt, "Mask", 0f, 0f, RefW, RefH, new Color(0f, 0f, 0f, 0.62f));
+            mask.raycastTarget = true;
+            Image panel = UiKit.Panel(lrt, "NamePanel", 500f, 330f, 600f, 230f, new Color(0.11f, 0.13f, 0.17f, 0.99f));
+            UiKit.Label(panel.transform, "Title", 24f, 16f, 552f, 32f, "给卡组起个名字", 20, TextAnchor.MiddleLeft, UiKit.Selected);
+
+            var inputGo = new GameObject("NameInput", typeof(RectTransform));
+            inputGo.transform.SetParent(panel.transform, false);
+            var irt = inputGo.GetComponent<RectTransform>();
+            irt.anchorMin = irt.anchorMax = new Vector2(0f, 1f);
+            irt.pivot = new Vector2(0f, 1f);
+            irt.anchoredPosition = new Vector2(24f, -60f);
+            irt.sizeDelta = new Vector2(552f, 50f);
+            Image inputBg = inputGo.AddComponent<Image>();
+            inputBg.color = new Color(0.05f, 0.06f, 0.09f, 1f);
+            Text inText = UiKit.Label(inputGo.transform, "Text", 12f, 4f, 528f, 42f, "", 18, TextAnchor.MiddleLeft, UiKit.TextMain);
+            inText.supportRichText = false;
+            var input = inputGo.AddComponent<InputField>();
+            input.textComponent = inText;
+            input.targetGraphic = inputBg;
+            input.characterLimit = 12;
+            input.text = string.IsNullOrEmpty(initial) ? "" : initial;
+            _deckNameInput = input;
+
+            UiKit.Button(panel.transform, "Ok", 210f, 154f, 170f, 46f, "确定", UiKit.MyCamp, delegate
+            {
+                string v = _deckNameInput == null ? null : _deckNameInput.text;
+                ApplyDeckName(v);
+            });
+            UiKit.Button(panel.transform, "Cancel", 400f, 154f, 170f, 46f, "取消", UiKit.ButtonNormal, delegate { CloseNameDialog(); });
+            // 回车确认
+            input.onEndEdit.AddListener(delegate (string v)
+            {
+                if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)) { ApplyDeckName(v); }
+            });
+            // 抢键盘焦点:同一帧 ActivateInputField 常常无效,下一帧再选中一次
+            if (EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(input.gameObject);
+            }
+            input.ActivateInputField();
+            input.Select();
+            StartCoroutine(FocusNameInputNextFrame(input));
+        }
+
+        /// <summary>下一帧再抢一次焦点,保证能直接打字。</summary>
+        private System.Collections.IEnumerator FocusNameInputNextFrame(InputField input)
+        {
+            yield return null;
+            yield return null;
+            if (input == null || _nameLayer == null) { yield break; }
+            if (EventSystem.current != null) { EventSystem.current.SetSelectedGameObject(input.gameObject); }
+            input.ActivateInputField();
+            input.MoveTextEnd(false);
+        }
+
+        private void ApplyDeckName(string name)
+        {
+            V06DeckSave deck = CurrentDeck();
+            if (deck != null)
+            {
+                string n = string.IsNullOrEmpty(name) ? deck.name : name.Trim();
+                if (string.IsNullOrEmpty(n)) { n = "未命名卡组"; }
+                if (n.Length > 12) { n = n.Substring(0, 12); }
+                deck.name = n;
+                V06Save.Save();
+                Toast("已命名为：" + n);
+            }
+            CloseNameDialog();
+            RefreshDeck();
+        }
+
+        private void CloseNameDialog()
+        {
+            if (_nameLayer != null) { Destroy(_nameLayer.gameObject); _nameLayer = null; }
+            _deckNameInput = null;
         }
 
         // ───────────────────────── 资料 ─────────────────────────
@@ -1118,7 +1554,12 @@ namespace Jieqiao.UI
                 Text t = UiKit.Label(_pgProfile, "Record" + i, 724f, 72f + i * 42f, 812f, 38f, "", 15, TextAnchor.MiddleLeft, UiKit.TextDim);
                 _recordTexts.Add(t);
             }
-            UiKit.Button(_pgProfile, "ProfReset", 64f, 640f, 260f, 44f, "清空战绩（测试用）", UiKit.ButtonNormal, delegate
+            _devBtn = UiKit.Button(_pgProfile, "ProfDev", 336f, 640f, 300f, 44f, "开发者模式：关 [F9]", UiKit.ButtonNormal, delegate
+            {
+                ToggleDevMode();
+                RefreshDevBtn();
+            });
+            UiKit.Button(_pgProfile, "ProfReset", 64f, 640f, 260f, 44f, "开发:清空战绩", UiKit.ButtonNormal, delegate
             {
                 V06Save.Data.records.Clear();
                 V06Save.Data.matches = 0; V06Save.Data.wins = 0; V06Save.Data.losses = 0; V06Save.Data.draws = 0;
@@ -1132,6 +1573,15 @@ namespace Jieqiao.UI
         {
             V06SaveData d = V06Save.Data;
             if (d == null) { return; }
+            if (d.matches <= 0)
+            {
+                _profileStats.text = "还没有战绩。\n完成第一局后，这里会显示胜负、胜率与平均轮数。\n\n"
+                    + "收集：" + V06Save.DistinctOwned() + " 种 / " + V06Save.TotalOwned() + " 张\n"
+                    + "等级：" + d.level + "（" + d.exp + "/100）　称号：" + d.title + "\n"
+                    + "连续签到：" + d.streak + " 天";
+                for (int i = 0; i < _recordTexts.Count; i++) { _recordTexts[i].text = i == 0 ? "（暂无对局记录）" : ""; }
+                return;
+            }
             _profileStats.text = "对局：" + d.matches + "\n胜：" + d.wins + "　负：" + d.losses + "　平：" + d.draws
                 + "\n胜率：" + d.WinRate + "%\n平均轮数：" + d.AvgRounds + "\n累计旗差：" + d.flagDiffSum
                 + "\n等级：" + d.level + "（" + d.exp + "/100）\n称号：" + d.title
@@ -1378,14 +1828,14 @@ namespace Jieqiao.UI
                     "shop_shelf_frame", new Color(0.12f, 0.14f, 0.19f, 0.96f));
                 if (V06UiV07.HasAnim("anim_shop_shelf_pulse")) { V06UiV07.PlayAnim(shelf, "anim_shop_shelf_pulse", 2f, true); }
                 V06UiV07.Icon(shelf.transform, "Pack", 44f, 24f, 192f, d.Skin, Color.white);
-                UiKit.Label(shelf.transform, "Name", 12f, 224f, 256f, 30f, d.Name, 20, TextAnchor.MiddleCenter, UiKit.Selected);
-                UiKit.Label(shelf.transform, "Desc", 16f, 256f, 248f, 56f, d.Desc, 13, TextAnchor.UpperLeft, UiKit.TextDim);
+                UiKit.Label(shelf.transform, "Name", 12f, 222f, 256f, 32f, d.Name, 22, TextAnchor.MiddleCenter, UiKit.Selected);
+                UiKit.Label(shelf.transform, "Desc", 16f, 258f, 248f, 56f, d.Desc, 15, TextAnchor.UpperLeft, UiKit.TextDim);
 
                 // 价格牌
                 Image tag = V06UiV07.Panel(shelf.transform, "PriceTag", 56f, 320f, 168f, 52f,
                     "shop_price_tag", new Color(0.16f, 0.17f, 0.22f, 0.98f));
                 string unit = d.Pay == V06Shop.Currency.Gems ? "宝石" : (d.Pay == V06Shop.Currency.Packs ? "卡包" : "金币");
-                Text pt = UiKit.Label(tag.transform, "P", 0f, 0f, 168f, 52f, d.Price + " " + unit, 18,
+                Text pt = UiKit.Label(tag.transform, "P", 0f, 0f, 168f, 52f, d.Price + " " + unit, 22,
                     TextAnchor.MiddleCenter, UiKit.TextMain);
                 _shopPriceText.Add(pt);
                 // 库存/限购
@@ -1407,11 +1857,11 @@ namespace Jieqiao.UI
             if (_shopShelf.Count == 0) { return; }
             UiKit.Label(_pgShop, "ShopLogTitle", 40f, 566f, 600f, 28f, "开包记录", 18, TextAnchor.MiddleLeft, UiKit.Selected);
             _shopLogText = UiKit.Label(_pgShop, "ShopLog", 40f, 596f, 1100f, 130f, "", 15, TextAnchor.UpperLeft, UiKit.TextMain);
-            Button open = UiKit.Button(_pgShop, "ShopOpenPack", 1180f, 590f, 360f, 56f, "开一个已购卡包（0）", UiKit.ButtonNormal,
+            Button open = UiKit.Button(_pgShop, "ShopOpenPack", 1180f, 590f, 360f, 56f, "打开库存卡包（0）", new Color(0.22f, 0.26f, 0.32f),
                 delegate { DoOpenPack(); });
             open.name = "ShopOpenPack";
             UiKit.Label(_pgShop, "ShopRule", 1180f, 654f, 360f, 76f,
-                "对局与签到都会给卡包。买卡包=直接开卡（立刻入库）。", 13, TextAnchor.UpperLeft, UiKit.TextDim);
+                "对局与签到都会给卡包。商店「购买」= 立刻开卡入库;下方「打开库存卡包」消耗你已有的卡包。", 15, TextAnchor.UpperLeft, UiKit.TextDim);
         }
 
         private void DoBuy(int i)
@@ -1423,11 +1873,12 @@ namespace Jieqiao.UI
             if (names == null)
             {
                 if (_shopLogText != null) { _shopLogText.text = "购买失败：" + err; }
-                V06Audio.Play("sfx_back");
+                bool soldOut = err != null && (err.Contains("售罄") || err.Contains("限购") || err.Contains("上限"));
+                V06Audio.Play(soldOut ? "R20" : "R17");
                 Toast("购买失败：" + err);
                 return;
             }
-            V06Audio.Play("sfx_coin");
+            V06Audio.Play("R19");
             if (_shopBuyBtn[i] != null) { OverlayOnce(_shopBuyBtn[i].GetComponent<Image>(), "anim_buy_burst", 12f, 0.8f); }
             if (_shopShelf[i] != null && V06UiV07.HasAnim("anim_price_pop")) { OverlayOnce(_shopShelf[i], "anim_price_pop", 12f, 0.7f); }
             if (_shopLogText != null)
@@ -1450,7 +1901,7 @@ namespace Jieqiao.UI
                 Toast("开包失败：" + err);
                 return;
             }
-            V06Audio.Play("sfx_coin");
+            V06Audio.Play("R14");
             if (_shopLogText != null) { _shopLogText.text = "开包（用掉 1 个卡包）：" + string.Join("、", names.ToArray()); }
             Toast("开包：" + string.Join("、", names.ToArray()));
             RefreshShop();
@@ -1474,7 +1925,14 @@ namespace Jieqiao.UI
                 {
                     _shopBuyBtn[i].GetComponent<Image>().color = can ? UiKit.MyCamp : new Color(0.20f, 0.21f, 0.25f);
                     var txt = _shopBuyBtn[i].GetComponentInChildren<Text>();
-                    if (txt != null) { txt.text = can ? ("购买 " + d2.Count + " 张") : "买不了"; }
+                    if (txt != null)
+                    {
+                        string cur = d2.Pay == V06Shop.Currency.Gems ? "宝石" : (d2.Pay == V06Shop.Currency.Packs ? "卡包" : "金币");
+                        // 可买:金色底用深色字;不可买:写明原因,不要只说"买不了"
+                        txt.text = can ? (d2.Price + " " + cur + " · 购买 " + d2.Count + " 张") : ("买不了：" + why);
+                        txt.color = can ? new Color(0.09f, 0.13f, 0.18f) : new Color(0.85f, 0.70f, 0.66f);
+                        txt.fontSize = can ? 17 : 15;
+                    }
                 }
                 if (i < _shopCountText.Count && _shopCountText[i] != null)
                 {
@@ -1537,7 +1995,7 @@ namespace Jieqiao.UI
                 // 领取时盖个章（有关键帧就播帧，没有就用缩放弹一下）
                 for (int ci = 0; ci < _checkCells.Count; ci++) { V06UiV07.StopPulse(_checkCells[ci].rectTransform); }
                 V06UiV07.PlayOnce(_checkCells[System.Math.Max(0, ((V06Save.Data.streak - 1) % 7))], "anim_checkin_stamp", 20f);
-                V06Audio.Play("sfx_confirm");
+                V06Audio.Play("R22");
                 if (reward != null) { _checkInfo.text = "签到成功！" + reward; }
             });
             UiKit.Button(_pgCheckIn, "CheckBack", 400f, 400f, 240f, 60f, "回大厅", UiKit.ButtonNormal, delegate { ShowPage("home"); });
@@ -1555,12 +2013,13 @@ namespace Jieqiao.UI
                 int d = i + 1;
                 bool claimed = d < day || (todayDone && d == day);
                 bool ready = !todayDone && d == day;
-                _checkLabels[i].text = "第 " + d + " 天\n" + V06Save.CheckInRewardText(d) + "\n"
-                    + (claimed ? "已领取" : (ready ? "今天可领" : "未解锁"));
+                _checkLabels[i].text = (ready ? "【今日】" : "第 " + d + " 天") + "\n"
+                    + V06Save.CheckInRewardText(d) + "\n"
+                    + (claimed ? "✔ 已领取" : (ready ? "今天可领" : "未解锁"));
                 _checkCells[i].color = claimed ? new Color(0.14f, 0.20f, 0.16f)
                     : (ready ? new Color(0.24f, 0.22f, 0.12f) : UiKit.CardBg);
                 _checkLabels[i].color = claimed ? new Color(0.6f, 0.85f, 0.65f)
-                    : (ready ? UiKit.Selected : UiKit.TextDim);
+                    : (ready ? new Color(1f, 0.92f, 0.55f) : new Color(0.62f, 0.64f, 0.70f));
                 // V0.7：今天可领的格子呼吸 + 若有关键帧就播帧
                 if (ready)
                 {
@@ -1573,7 +2032,22 @@ namespace Jieqiao.UI
                 }
             }
             _checkInfo.text = "连续签到 " + V06Save.Data.streak + " 天　本月已签 " + V06Save.Data.monthDays + " 天　"
-                + (todayDone ? "今天已签到" : "今天还没签到");
+                + (todayDone ? "今天已签到（明天再来）" : "今天还没签到");
+            // 今日已领:主按钮禁用并明确文案,避免玩家反复点
+            Transform cb = _pgCheckIn.Find("CheckBtn");
+            if (cb != null)
+            {
+                Button b = cb.GetComponent<Button>();
+                Text t = cb.GetComponentInChildren<Text>();
+                if (b != null) { b.interactable = !todayDone; }
+                if (t != null)
+                {
+                    t.text = todayDone ? "今日已领取" : "领取今日奖励";
+                    t.color = todayDone ? new Color(0.62f, 0.66f, 0.72f) : UiKit.TextMain;
+                }
+                Image img = cb.GetComponent<Image>();
+                if (img != null) { img.color = todayDone ? new Color(0.20f, 0.22f, 0.26f) : UiKit.MyCamp; }
+            }
         }
 
         // ───────────────────────── 页面切换 / 显隐 ─────────────────────────
@@ -1595,6 +2069,10 @@ namespace Jieqiao.UI
                 _navButtons[i].GetComponent<Image>().color =
                     active ? new Color(0.26f, 0.30f, 0.24f) : UiKit.ButtonNormal;
             }
+            // 切页音:回大厅一记收束,其余页签一声轻挑
+            if (id == "home" && _lastPageSound != "home") { V06Audio.Play("R05"); }
+            else if (id != "home") { V06Audio.Play("R03"); }
+            _lastPageSound = id;
             V06UiV07.FadeIn(PageOf(id), 0.16f);
             V06UiV07.PageWipe(_root, null);
             // 大厅用主题曲，其他次级页面切到更安静的民谣管弦（双源交叉淡入，切页不断音）

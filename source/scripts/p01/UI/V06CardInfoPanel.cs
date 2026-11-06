@@ -6,6 +6,8 @@ namespace Jieqiao.UI
     public struct V06CardView
     {
         public string CardId, Name, CategoryText, KeywordText, EffectText;
+        /// <summary>术语解释块（V06Terms.Block 生成）；为空则不显示。</summary>
+        public string TermText;
         public int Cost, Atk, Hp, CurrentAtk, CurrentHp, Damage;
         public string ArtPath;
         public bool CanPlayNow;
@@ -18,7 +20,7 @@ namespace Jieqiao.UI
         private static readonly Color Gold = new Color32(234, 202, 138, 255);
         private static readonly Color Ready = new Color32(150, 218, 198, 255);
         private RectTransform _root;
-        private Text _title, _type, _stats, _keywords, _effect, _availability;
+        private Text _title, _type, _stats, _keywords, _effect, _availability, _terms;
         private Image _art;
         private Font _font;
         private string _artPath;
@@ -30,18 +32,24 @@ namespace Jieqiao.UI
             _root = Rect(parent, "V06 Card Info", 0f, 0f, 1f, 1f);
             Panel(_root, new Color32(23, 32, 47, 242));
             Panel(Rect(_root, "Gold Rule", .046f, .938f, .954f, .949f), Gold);
-            Panel(Rect(_root, "Art Well", .047f, .492f, .365f, .906f), new Color32(12, 19, 30, 190));
-            _art = Panel(Rect(_root, "Art", .058f, .506f, .354f, .893f), Color.white);
+            // 立绘框固定 3:4(与卡面原图 384×512、战斗手牌 96×128 一致),不再压扁
+            Panel(Rect(_root, "Art Well", .046f, .488f, .372f, .886f), new Color32(12, 19, 30, 190));
+            _art = Panel(Rect(_root, "Art", .055f, .500f, .363f, .874f), Color.white);
             _art.preserveAspect = true;
             _title = Label("Name", .401f, .798f, .951f, .912f, 23, Gold, FontStyle.Bold);
             _type = Label("Type", .401f, .710f, .951f, .795f, 15, Secondary);
-            _stats = Label("Stats", .401f, .589f, .951f, .709f, 17, Ink);
-            _availability = Label("Availability", .401f, .502f, .951f, .588f, 14, Ready);
-            _keywords = Label("Keywords", .046f, .410f, .954f, .477f, 15, Gold);
-            Panel(Rect(_root, "Divider", .046f, .393f, .954f, .397f), new Color32(78, 97, 119, 235));
-            _effect = Label("Effect", .046f, .057f, .954f, .373f, 17, Ink);
+            _stats = Label("Stats", .401f, .620f, .951f, .709f, 17, Ink);
+            _availability = Label("Availability", .401f, .556f, .951f, .617f, 14, Ready);
+            _keywords = Label("Keywords", .046f, .492f, .954f, .553f, 15, Gold);
+            Panel(Rect(_root, "Divider", .046f, .478f, .954f, .482f), new Color32(78, 97, 119, 235));
+            _effect = Label("Effect", .046f, .272f, .954f, .470f, 17, Ink);
             _effect.alignment = TextAnchor.UpperLeft;
             _effect.lineSpacing = 1.11f;
+            // 术语解释区（V0.7 §1）：按当前引擎实现逐条解释这张卡涉及的术语
+            Panel(Rect(_root, "Divider2", .046f, .258f, .954f, .262f), new Color32(78, 97, 119, 235));
+            _terms = Label("Terms", .046f, .055f, .954f, .250f, 14, Secondary);
+            _terms.alignment = TextAnchor.UpperLeft;
+            _terms.lineSpacing = 1.16f;
             Hide();
         }
 
@@ -57,6 +65,10 @@ namespace Jieqiao.UI
                 : "";
             _keywords.text = v.KeywordText ?? "";
             _effect.text = v.EffectText ?? "";
+            string terms = v.TermText;
+            if (string.IsNullOrEmpty(terms)) { terms = V06Terms.Block(V06Catalog.ById(v.CardId)); }
+            _terms.text = terms ?? "";
+            _terms.gameObject.SetActive(!string.IsNullOrEmpty(_terms.text));
             _availability.text = v.CanPlayNow ? "当前可用" : "当前不可用";
             _availability.color = v.CanPlayNow ? Ready : Secondary;
             if (_artPath != v.ArtPath || _art.sprite == null)

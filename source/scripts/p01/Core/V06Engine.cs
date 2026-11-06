@@ -19,14 +19,14 @@ namespace Jieqiao
         public const int MaxRounds = 12;
         public const int HandLimit = 9;
         public const int MainActionsPerRound = 4;
-        public const int PressureStartRound = 7;
+        public const int PressureStartRound = 8;
         public const int MaxActionPoints = 9;
         public const int DamageCap = 9;
 
         // ── 可配置项：用于对照实验，默认值 = 文档 V0.6 原文 ──
         /// <summary>远征旗生命（文档 20）。</summary>
         public int CfgFlagHp = FlagMaxHp;
-        /// <summary>战场压力起始轮（文档第 7 轮）。</summary>
+        /// <summary>战场压力起始轮（V0.7 定稿：第 8 轮）。</summary>
         public int CfgPressureStart = PressureStartRound;
         /// <summary>
         /// 压力曲线：0 = 文档线性（1,2,3…）；1 = 半速（1,1,2,2,3,3…）。
@@ -398,6 +398,16 @@ namespace Jieqiao
                 Log.Add("击败转化：方 " + (1 - camp) + " 旗 −" + CfgKillFlagDamage);
             }
             if (u.Has("机核")) { Draw(owner.Camp, 1); Log.Add("机核：控制者抽 1 张"); }
+            // T02 微光侍灵：被击败时治疗一个己方受伤单位 1
+            if (u.CardId == "T02")
+            {
+                V06Unit healTarget = V06Effects.BestHealTarget(this, camp, false, -1);
+                if (healTarget != null)
+                {
+                    Heal(healTarget, 1);
+                    Log.Add("微光侍灵：治疗 " + healTarget.Name + " 1");
+                }
+            }
             if (kw == "余烬")
             {
                 // 余烬：对控制者选择的一个敌单位造成 1 点效果伤害
@@ -609,14 +619,36 @@ namespace Jieqiao
             return atk.Has("远射") || atk.Has("飞行");
         }
 
+        /// <summary>卡面写明"不能攻击远征旗"的衍生物(如 T05/T07)。</summary>
+        public static bool CannotAttackFlag(V06Unit u)
+        {
+            if (u == null) { return true; }
+            V06Card c = V06Catalog.ById(u.CardId);
+            if (c == null || c.Text == null) { return false; }
+            return c.Text.IndexOf("不能攻击远征旗", System.StringComparison.Ordinal) >= 0;
+        }
+
+        /// <summary>有效关键词:除自身关键词外,还包含战况光环给予的(目前只有 F03 给构装坚壁)。</summary>
+        public bool HasEffectiveKeyword(V06Unit u, string kw)
+        {
+            if (u == null) { return false; }
+            if (u.Has(kw)) { return true; }
+            if (kw == "坚壁" && Players[u.Camp].BattlefieldId == "F03" && V06Effects.IsConstruct(u)) { return true; }
+            return false;
+        }
+
         public bool CanAttackFlag(V06Unit atk)
         {
             if (!CanAttackFrom(atk)) { return false; }
+            if (CannotAttackFlag(atk)) { return false; }
             return EnemyFrontEmpty(atk.Camp);
         }
 
         /// <summary>攻击值的最终数值（含关键词与强攻），限制 0–9。</summary>
-        public int FinalAttack(V06Unit atk, bool powerStrike)
+        public int FinalAttack(V06Unit atk, bool powerStrike) { return FinalAttack(atk, powerStrike, false); }
+
+        /// <summary>预览时 commit=false 不会消费"每轮首次协攻"标记,只有真正提交才消费。</summary>
+        public int FinalAttack(V06Unit atk, bool powerStrike, bool commit)
         {
             int v = atk.AtkBaseNow;
             if (powerStrike) { v += 1; }
@@ -632,7 +664,7 @@ namespace Jieqiao
                     // 战况 F06 荒原战鼓：己方每轮第一次触发协攻时，另给该次攻击 +1
                     if (p.BattlefieldId == "F06" && !p.FirstAssistUsed)
                     {
-                        p.FirstAssistUsed = true;
+                        if (commit) { p.FirstAssistUsed = true; }
                         v += 1;
                     }
                 }
@@ -663,19 +695,21 @@ namespace Jieqiao
         public int ModifyAttackDamage(V06Unit target, int raw, bool applyGuard, int flatReduce)
         {
             int dmg = raw;
-            if (applyGuard && target != null)
+            // 坚壁类减伤:固有坚壁 / F03 工坊防线 / P12 共同战线,三者取其一,不叠加
+            bool guardLike = false;
+            if (target != null)
             {
-                bool guard = target.Has("坚壁");
-                // 战况 F03 工坊防线：己方构装单位获得坚壁（不与已有坚壁叠加）
-                if (!guard && Players[target.Camp].BattlefieldId == "F03"
-                    && V06Effects.IsConstruct(target)) { guard = true; }
-                if (guard) { dmg -= 1; }
+                guardLike = target.Has("坚壁");
+                if (!guardLike && Players[target.Camp].BattlefieldId == "F03"
+                    && V06Effects.IsConstruct(target)) { guardLike = true; }
+                if (!guardLike && V06Slot.IsFront(target.Slot)
+                    && Players[target.Camp].FrontReduceThisRound > 0) { guardLike = true; }
             }
+            if (applyGuard && guardLike) { dmg -= 1; }
             dmg -= flatReduce;
             if (target != null)
             {
                 dmg -= target.ReduceThisRound;
-                if (V06Slot.IsFront(target.Slot)) { dmg -= Players[target.Camp].FrontReduceThisRound; }
                 // 战况 F02 树冠战场：己方后排单位受到的主动攻击伤害减 1
                 if (V06Slot.IsBack(target.Slot) && Players[target.Camp].BattlefieldId == "F02") { dmg -= 1; }
             }
@@ -932,6 +966,9 @@ namespace Jieqiao
             u.DeployedThisRound = true;
             p.Slots[slot] = u;
             Log.Add("方 " + camp + " 生成 " + c.Name);
+            // 衍生物进场后同样结算自己的进场能力（当前实际有影响的是 T08 的维修）。
+            // 先放好槽位再结算，保证"另一个己方构装"这类指向能正确检索。
+            ApplyEnter(p, u);
             return u;
         }
 
@@ -970,10 +1007,10 @@ namespace Jieqiao
             }
             if (a.PowerStrike) { p.ActionPoints -= 1; p.PowerStrikeUsed = true; }
             p.MainActionsUsed++;
+            // 先算攻击值:协攻要求"本次尚未攻击过",若先置 AttackedThisRound 会导致协攻永远不生效
+            int raw = FinalAttack(atk, a.PowerStrike, true);
             atk.AttackedThisRound = true;
             if (atk.SneakActive) { atk.SneakActive = false; }   // 潜行到自己首次主动攻击前解除
-
-            int raw = FinalAttack(atk, a.PowerStrike);
             PendingAttack = a;
             PendingAttackerUid = atk.Uid;
             PendingVsUnit = !a.ToFlag;
@@ -1176,6 +1213,12 @@ namespace Jieqiao
             }
             Active = other;
             return true;
+        }
+
+        /// <summary>打出一张非单位牌(战术/装备/附印/支援等)之后的行动交接。</summary>
+        public void AfterNonUnitAction()
+        {
+            AfterAction();
         }
 
         private void AfterAction()

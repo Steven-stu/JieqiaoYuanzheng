@@ -2,6 +2,7 @@
 using System;
 using System.Text;
 using UnityEditor;
+using Jieqiao;
 using UnityEngine;
 
 /// <summary>
@@ -28,6 +29,29 @@ public static class V06BatchRunner
     {
         RunAll();
         EditorUtility.DisplayDialog("界桥远征", "检查完成，失败项：" + _failTotal + "\n详细结果见 Console。", "好");
+    }
+
+    /// <summary>
+    /// 无头一键：先把新卡面按立绘规则重导（Sprite / Single / HQ），再跑全部检查。
+    ///
+    /// 为什么合并成一个入口：batchmode 一个进程只能执行一个 -executeMethod，
+    /// 分两次跑会在两次之间留下 Library 锁，第二次直接不启动（本轮踩过两次）。
+    ///
+    /// 命令行：
+    ///   Unity.exe -batchmode -quit -projectPath &lt;项目&gt;
+    ///             -executeMethod V06BatchRunner.RunAllWithArtImport -logFile &lt;日志&gt;
+    /// </summary>
+    public static void RunAllWithArtImport()
+    {
+        try
+        {
+            Jieqiao.EditorTools.V07UnitArtImporter.Apply();
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning("[批量检查] 立绘导入设置失败：" + e.Message);
+        }
+        RunAll();
     }
 
     public static void RunAll()
@@ -137,9 +161,9 @@ public static class V06BatchRunner
         // testDecks = true 时只跑 8..10 号测试预组（含装备/附印/战况/响应）
         if (testDecks)
         {
-            return V06Sim.RunTrial(gamesPerPair * 3, seedBase, "测试牌库", 20, 7, 1, 0, "-batch");
+            return V06Sim.RunTrial(gamesPerPair * 3, seedBase, "测试牌库", 20, V06Engine.PressureStartRound, 1, 0, "-batch");
         }
-        return V06Sim.RunTrial(gamesPerPair, seedBase, "全部预组轮换", 20, 7, 1, 0, "-batch");
+        return V06Sim.RunTrial(gamesPerPair, seedBase, "全部预组轮换", 20, V06Engine.PressureStartRound, 1, 0, "-batch");
     }
 
     private static string RunCoverageInternal()

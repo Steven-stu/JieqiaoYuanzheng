@@ -31,6 +31,10 @@ namespace Jieqiao
         public int TempAtk;            // 本轮临时增减（可为负）
         public string TagText;         // 标签原文，用于“构装/巨魔/飞行单位”等判定
         public List<string> Keywords = new List<string>();
+        // 来源台账：只记录"由这件装备／这枚附印添加上去"的关键词。
+        // 本体自带的关键词不进台账，撤装/换印时也就不会把本体能力一起删掉（第四十八轮 A-01）。
+        public List<string> KwFromEquip = new List<string>();
+        public List<string> KwFromSeal = new List<string>();
         public string EquipId;
         public string SealId;
         public bool IsToken;
@@ -60,6 +64,16 @@ namespace Jieqiao
             return false;
         }
 
+        /// <summary>移除一个关键词(换装备/附印或来源失效时用)。</summary>
+        public void RemoveKw(string kw)
+        {
+            if (string.IsNullOrEmpty(kw) || Keywords == null) { return; }
+            for (int i = 0; i < Keywords.Count; i++)
+            {
+                if (Keywords[i] == kw) { Keywords.RemoveAt(i); return; }
+            }
+        }
+
         public void AddKw(string kw)
         {
             if (!Has(kw)) { Keywords.Add(kw); }
@@ -86,6 +100,8 @@ namespace Jieqiao
             u.DragonFearThisRound = DragonFearThisRound; u.ReduceThisRound = ReduceThisRound; u.WatcherBellUsed = WatcherBellUsed;
             u.Growth = Growth; u.GrowthMaxed = GrowthMaxed; u.FusedFrom = FusedFrom;
             u.Keywords = new List<string>(Keywords);
+            u.KwFromEquip = new List<string>(KwFromEquip);
+            u.KwFromSeal = new List<string>(KwFromSeal);
             return u;
         }
     }
